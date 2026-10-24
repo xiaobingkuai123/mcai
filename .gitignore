@@ -1,0 +1,21 @@
+# Maven build output
+target/
+
+# IDE metadata
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Local secrets and generated server data
+*.db
+*.sqlite
+*.sqlite3
+config-local.yml
+config.secret.yml
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,98 @@
+language: "zh_CN"
+api:
+  normal-provider: "deepseek"
+  pro-provider: "deepseek"
+  timeout-seconds: 120
+  deepseek:
+    key: "sk-xxx"
+    base-url: "https://api.deepseek.com"
+    api-type: "chat"
+    normal-model: "deepseek-chat"
+    normal-think-model: "deepseek-reasoner"
+    pro-model: "deepseek-chat"
+    pro-think-model: "deepseek-reasoner"
+    max-tokens-fast: 4096
+    max-tokens-think: 64000
+  openai:
+    key: "sk-xxx"
+    base-url: "https://api.openai.com"
+    api-type: "chat"
+    normal-model: "gpt-4o-mini"
+    normal-think-model: "gpt-4o"
+    pro-model: "gpt-4o"
+    pro-think-model: "gpt-4o"
+    max-tokens-fast: 4096
+    max-tokens-think: 32768
+  anthropic:
+    key: "sk-ant-xxx"
+    base-url: "https://api.anthropic.com"
+    api-type: "messages"
+    normal-model: "claude-sonnet-4-20250514"
+    normal-think-model: "claude-sonnet-4-20250514"
+    pro-model: "claude-opus-4-20250514"
+    pro-think-model: "claude-opus-4-20250514"
+    max-tokens-fast: 4096
+    max-tokens-think: 32768
+  gemini:
+    key: "AIza..."
+    base-url: "https://generativelanguage.googleapis.com"
+    api-type: "gemini"
+    normal-model: "gemini-2.5-flash"
+    normal-think-model: "gemini-2.5-flash"
+    pro-model: "gemini-2.5-pro"
+    pro-think-model: "gemini-2.5-pro"
+    max-tokens-fast: 4096
+    max-tokens-think: 32768
+chat:
+  system-prompt: "你是一个Minecraft服务器助手。请用中文回答，简洁友好，尽量控制在50字以内。"
+  max-history: 5
+  admin-max-history: 30
+  log-to-console: true
+  think-delay-ticks: 20
+  streaming:
+    enabled: true
+    # Boss 条刷新间隔，单位 tick。4 = 200ms
+    update-ticks: 4
+    # Boss 条最多显示最近多少个字符（不含阶段标题）
+    window-chars: 48
+    # 思考结束后是否把完整思考过程发到聊天栏
+    show-reasoning-in-chat: true
+    # 回答结束后 Boss 条保留多少 tick 再隐藏。20 tick = 1 秒
+    bossbar-hold-ticks: 40
+points:
+  normal-cost: 1
+  normal-think-cost: 2
+  pro-cost: 3
+  pro-think-cost: 6
+  cost-per-point: 100.0
+  max-buy-per-day: 20
+rate-limit:
+  enabled: true
+  per-minute: 3
+daily-limit:
+  enabled: true
+  groups:
+    default:
+      max-points: 10
+      max-question-length: 200
+    vip:
+      permission: "mcai.group.vip"
+      max-points: 50
+      max-question-length: 500
+    admin:
+      permission: "mcai.group.admin"
+      max-points: -1
+      max-question-length: 0
+sounds:
+  enabled: true
+  global-volume: 0.5
+  global-pitch: 1.0
+  menu-open: {sound: "BLOCK_CHEST_OPEN", volume: 0.6, pitch: 1.0}
+  button-click: {sound: "UI_BUTTON_CLICK", volume: 0.4, pitch: 1.2}
+  thinking-start: {sound: "BLOCK_NOTE_BLOCK_CHIME", volume: 0.5, pitch: 1.5}
+  reasoning-done: {sound: "BLOCK_NOTE_BLOCK_BELL", volume: 0.4, pitch: 0.8}
+  answer: {sound: "ENTITY_EXPERIENCE_ORB_PICKUP", volume: 0.3, pitch: 1.0}
+  buy-success: {sound: "ENTITY_PLAYER_LEVELUP", volume: 0.7, pitch: 1.0}
+  buy-fail: {sound: "BLOCK_ANVIL_LAND", volume: 0.3, pitch: 0.5}
+  points-exhausted: {sound: "BLOCK_FIRE_EXTINGUISH", volume: 0.4, pitch: 0.8}
+  history-cleared: {sound: "BLOCK_LAVA_EXTINGUISH", volume: 0.4, pitch: 1.0}

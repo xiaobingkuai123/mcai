@@ -1,0 +1,23 @@
+name: McAI
+version: 1.0.0
+author: xiaobingkuai123
+main: cn.xiaobingkuai123.mcai.McAI
+api-version: '1.21'
+folia-supported: true
+softdepend: [Vault, floodgate]
+libraries:
+  - com.google.code.gson:gson:2.8.9
+commands:
+  ai:
+    description: AI对话
+    usage: "§c/ai help"
+    aliases: [askai]
+permissions:
+  mcai.use:
+    default: true
+  mcai.admin:
+    default: op
+  mcai.group.vip:
+    default: false
+  mcai.group.admin:
+    default: op
