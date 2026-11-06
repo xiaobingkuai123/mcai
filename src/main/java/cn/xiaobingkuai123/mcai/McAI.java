@@ -66,8 +66,8 @@ public class McAI extends JavaPlugin {
     ChatManager chatManager;
     EconomyManager economyManager;
 
-    final Map<UUID, Long> lastRequestTime = new ConcurrentHashMap<>();
-    final Map<UUID, Integer> requestCountPerMinute = new ConcurrentHashMap<>();
+    final RequestRateLimiter rateLimiter = new RequestRateLimiter();
+
     final Map<UUID, String> waitingInputType = new ConcurrentHashMap<>();
     final Map<UUID, String> selectedChatMode = new ConcurrentHashMap<>();
     final Map<UUID, Boolean> isProMode = new ConcurrentHashMap<>();
@@ -136,8 +136,7 @@ public class McAI extends JavaPlugin {
             }
         }
         conversationMemories.clear();
-        lastRequestTime.clear();
-        requestCountPerMinute.clear();
+        rateLimiter.clear();
         waitingInputType.clear();
         selectedChatMode.clear();
         isProMode.clear();
@@ -172,7 +171,7 @@ public class McAI extends JavaPlugin {
         logToConsole = getConfig().getBoolean("chat.log-to-console", true);
         String historyModeName = getConfig().getString("chat.history.mode", "sliding");
         historyMode = "accumulate".equalsIgnoreCase(historyModeName) ? ConversationHistory.Mode.ACCUMULATE : ConversationHistory.Mode.SLIDING;
-        historyMaxRounds = Math.max(0, getConfig().getInt("chat.history.max-rounds", maxHistory));
+        historyMaxRounds = Math.max(0, maxHistory);
         historyPersistenceEnabled = getConfig().getBoolean("chat.history.persistence.enabled", true);
         geminiCachedContentEnabled = getConfig().getBoolean("api.gemini.cached-content.enabled", false);
         roundPromptEnabled = getConfig().getBoolean("chat.round-prompt.enabled", true);

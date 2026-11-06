@@ -71,7 +71,8 @@ public class ChatManager {
             try {
                 ApiAdapter.AdapterResponse response = callApi(
                         playerId, question, mode, maxHist,
-                        output == null ? null : output::accept);
+                        output == null ? null : output::accept,
+                        () -> plugin.isEnabled() && plugin.activePlayerRequests.get(playerId) == requestToken);
 
                 if (output != null && output.isClosed()) {
                     throw new CancellationException("Player stream closed");
@@ -313,6 +314,12 @@ public class ChatManager {
     private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
             String mode, int effectiveHistory,
             Consumer<AiStreamClient.Delta> streamListener) throws Exception {
+        return callApi(userId, question, mode, effectiveHistory, streamListener, plugin::isEnabled);
+    }
+
+    private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
+            String mode, int effectiveHistory, Consumer<AiStreamClient.Delta> streamListener,
+            java.util.function.BooleanSupplier active) throws Exception {
         boolean isThinking = mode.endsWith("_think");
         boolean isPro = mode.startsWith("pro");
 
@@ -370,13 +377,15 @@ public class ChatManager {
             throw new CancellationException("Plugin is shutting down");
         }
 
+        ApiRequestRetry retry = new ApiRequestRetry(active);
         if (options.streaming()) {
-            ApiAdapter.AdapterResponse streamed = AiStreamClient.send(client, adapter, request, streamListener == null ? delta -> {} : streamListener);
+            ApiAdapter.AdapterResponse streamed = retry.stream(
+                    client, adapter, request, streamListener, options.maxRetries());
             logCacheUsage(streamed.cacheUsage());
             return streamed;
         }
 
-        HttpResponse<String> httpResponse = client.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> httpResponse = retry.send(client, request, options.maxRetries());
         int status = httpResponse.statusCode();
         if (status >= 200 && status < 300) {
             String body = httpResponse.body();
@@ -392,6 +401,10 @@ public class ChatManager {
                 throw new IOException("AI provider returned an invalid response", e);
             }
         }
+        throw providerError(status);
+    }
+
+    private IOException providerError(int status) {
         String errorMessage;
         if (status == 401) {
             errorMessage = plugin.languageManager.get("api-401");
@@ -401,6 +414,6 @@ public class ChatManager {
             errorMessage = plugin.languageManager.get("api-unknown",
                     "code", String.valueOf(status));
         }
-        throw new java.io.IOException(errorMessage);
+        return new IOException(errorMessage);
     }
 }

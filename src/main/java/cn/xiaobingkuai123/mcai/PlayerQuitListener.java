@@ -20,16 +20,24 @@ public class PlayerQuitListener implements Listener {
         // worker 后续用 token 判断归属，不会误删重连后的新请求。
         plugin.activePlayerRequests.remove(playerId);
 
-        if (plugin.historyPersistenceEnabled) {
+        if (plugin.historyPersistenceEnabled && plugin.historyPersistence != null
+                && plugin.schedulerAdapter != null) {
             ConversationHistory memory = plugin.conversationMemories.get(playerId);
             if (memory != null) {
                 var snapshot = memory.persistedMessages();
-                plugin.schedulerAdapter.runAsync(() -> { try { plugin.historyPersistence.saveMessages(playerId, snapshot); } catch (Exception ignored) {} });
+                HistoryPersistence persistence = plugin.historyPersistence;
+                try {
+                    plugin.schedulerAdapter.runAsync(() -> {
+                        try { persistence.saveMessages(playerId, snapshot); }
+                        catch (Exception ignored) { }
+                    });
+                } catch (RuntimeException ignored) {
+                    // Shutdown must not prevent the remaining player-state cleanup.
+                }
             }
         }
         plugin.conversationMemories.remove(playerId);
-        plugin.lastRequestTime.remove(playerId);
-        plugin.requestCountPerMinute.remove(playerId);
+        plugin.rateLimiter.remove(playerId);
         plugin.waitingInputType.remove(playerId);
         plugin.selectedChatMode.remove(playerId);
         plugin.isProMode.remove(playerId);

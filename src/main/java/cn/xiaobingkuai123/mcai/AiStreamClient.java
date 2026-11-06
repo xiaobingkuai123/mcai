@@ -69,7 +69,7 @@ public final class AiStreamClient {
 
                 String contentType = response.headers().firstValue("Content-Type").orElse("");
                 if (!contentType.toLowerCase(Locale.ROOT).contains("text/event-stream")) {
-                    throw new IOException("Provider did not return text/event-stream");
+                    throw new ProtocolException("Provider did not return text/event-stream");
                 }
 
                 Accumulator accumulator = new Accumulator(listener);
@@ -98,6 +98,11 @@ public final class AiStreamClient {
         }
     }
 
+    public static final class ProtocolException extends IOException {
+        ProtocolException(String message) { super(message); }
+        ProtocolException(String message, Throwable cause) { super(message, cause); }
+    }
+
     public static final class ApiHttpException extends IOException {
         private final int statusCode;
         public ApiHttpException(int statusCode) {
@@ -112,7 +117,7 @@ public final class AiStreamClient {
         if (adapter instanceof GeminiAdapter) {
             String url = uri.toString();
             if (!url.contains(":generateContent")) {
-                throw new IOException("Invalid Gemini endpoint");
+                throw new ProtocolException("Invalid Gemini endpoint");
             }
             url = url.replace(":generateContent", ":streamGenerateContent");
             url += url.contains("?") ? "&alt=sse" : "?alt=sse";
@@ -168,17 +173,29 @@ public final class AiStreamClient {
     }
 
     private static void parseEvent(ApiAdapter adapter, String eventName, String data, Accumulator accumulator) throws Exception {
-        if ("[DONE]".equals(data.trim())) {
+        String trimmed = data.trim();
+        if (trimmed.isEmpty() || trimmed.startsWith(":")) return;
+        if ("[DONE]".equals(trimmed)) {
             accumulator.completed = true;
             return;
         }
 
-        JsonObject root = new JsonParser().parse(data).getAsJsonObject();
+        if ("error".equals(eventName)) throw new ProtocolException("Provider returned a stream error");
+        // Gate non-JSON keepalives before parsing, but never swallow damaged JSON payloads.
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return;
+        JsonElement parsed;
+        try {
+            parsed = new JsonParser().parse(trimmed);
+        } catch (JsonParseException e) {
+            throw new ProtocolException("Provider returned invalid stream JSON", e);
+        }
+        if (!parsed.isJsonObject()) throw new ProtocolException("Expected a stream JSON object");
+        JsonObject root = parsed.getAsJsonObject();
         String type = string(root, "type");
         captureCacheUsage(adapter, root, accumulator);
 
         if ("error".equals(eventName) || "error".equals(type) || root.has("error")) {
-            throw new IOException("Provider returned a stream error");
+            throw new ProtocolException("Provider returned a stream error");
         }
 
         if (adapter instanceof OpenAIResponsesAdapter) {
@@ -239,7 +256,7 @@ public final class AiStreamClient {
 
         String finishReason = string(choice, "finish_reason");
         if ("content_filter".equals(finishReason)) {
-            throw new IOException("Provider filtered the response");
+            throw new ProtocolException("Provider filtered the response");
         }
         if (!finishReason.isEmpty()) {
             accumulator.completed = true;
@@ -254,11 +271,11 @@ public final class AiStreamClient {
         } else if ("response.completed".equals(type)) {
             JsonObject response = object(root, "response");
             if (response != null && !"completed".equals(string(response, "status"))) {
-                throw new IOException("Responses request did not complete");
+                throw new ProtocolException("Responses request did not complete");
             }
             accumulator.completed = true;
         } else if ("response.failed".equals(type) || "response.incomplete".equals(type)) {
-            throw new IOException("Responses request failed or incomplete");
+            throw new ProtocolException("Responses request failed or incomplete");
         }
     }
 
@@ -283,7 +300,7 @@ public final class AiStreamClient {
     private static void parseGemini(JsonObject root, Accumulator accumulator) throws IOException {
         JsonArray candidates = array(root, "candidates");
         if (candidates == null || candidates.size() == 0) {
-            if (root.has("promptFeedback")) throw new IOException("Gemini blocked the prompt");
+            if (root.has("promptFeedback")) throw new ProtocolException("Gemini blocked the prompt");
             return;
         }
 
@@ -304,7 +321,7 @@ public final class AiStreamClient {
         String finishReason = string(candidate, "finishReason");
         if (!finishReason.isEmpty()) {
             if (!"STOP".equals(finishReason) && !"MAX_TOKENS".equals(finishReason)) {
-                throw new IOException("Gemini response was blocked");
+                throw new ProtocolException("Gemini response was blocked");
             }
             accumulator.completed = true;
         }

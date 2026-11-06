@@ -31,6 +31,24 @@ public class EconomyManager {
         String currentDate = "";
         int pointsUsed;
         int pointsBought;
+        private int pendingPurchases;
+
+        // -1: reserved, -2: integer capacity exceeded, otherwise remaining daily allowance.
+        synchronized long reservePurchase(int amount, int dailyLimit) {
+            resetIfNewDay();
+            long total = (long) pointsBought + pendingPurchases;
+            if (amount <= 0 || total + amount > Integer.MAX_VALUE) return -2;
+            if (dailyLimit >= 0 && total + amount > dailyLimit) return Math.max(0L, dailyLimit - total);
+            pendingPurchases += amount;
+            return -1;
+        }
+
+        synchronized void finishPurchase(int amount, boolean success) {
+            resetIfNewDay();
+            pendingPurchases -= amount;
+            if (success) pointsBought += amount;
+        }
+
 
         synchronized void resetIfNewDay() {
             String today = LocalDate.now().toString();
@@ -268,17 +286,7 @@ public class EconomyManager {
 
     private boolean checkRateLimit(Player player) {
         if (!plugin.rateLimitEnabled) return true;
-        UUID id = player.getUniqueId();
-        long now = System.currentTimeMillis();
-        synchronized (plugin) {
-            Long lastTime = plugin.lastRequestTime.get(id);
-            int count = plugin.requestCountPerMinute.getOrDefault(id, 0);
-            if (lastTime != null && now - lastTime > 60_000) count = 0;
-            if (count >= plugin.ratePerMinute) return false;
-            plugin.requestCountPerMinute.put(id, count + 1);
-            plugin.lastRequestTime.put(id, now);
-        }
-        return true;
+        return plugin.rateLimiter.acquire(player.getUniqueId(), plugin.ratePerMinute, System.currentTimeMillis());
     }
 
     private boolean checkDailyLimit(Player player, String mode) {
@@ -345,19 +353,17 @@ public class EconomyManager {
 
             DailyUsageRecord record = dailyUsageRecords.computeIfAbsent(
                     player.getUniqueId(), k -> new DailyUsageRecord());
-            synchronized (record) {
-                record.resetIfNewDay();
-                long bought = (long) record.pointsBought + amount;
-                if (bought > Integer.MAX_VALUE) {
-                    player.sendMessage(plugin.languageManager.get("buy-invalid-number"));
-                    return;
-                }
-                if (plugin.maxBuyPerDay >= 0 && bought > plugin.maxBuyPerDay) {
-                    player.sendMessage(plugin.languageManager.get("buy-max-today",
-                            "remain", String.valueOf(Math.max(0L, (long) plugin.maxBuyPerDay - record.pointsBought))));
-                    plugin.soundManager.playBuyFail(player);
-                    return;
-                }
+            long reservation = record.reservePurchase(amount, plugin.maxBuyPerDay);
+            if (reservation != -1) {
+                player.sendMessage(reservation == -2
+                        ? plugin.languageManager.get("buy-invalid-number")
+                        : plugin.languageManager.get("buy-max-today", "remain", String.valueOf(reservation)));
+                plugin.soundManager.playBuyFail(player);
+                return;
+            }
+
+            boolean purchased = false;
+            try {
                 if (!economy.has(player, totalCost)) {
                     player.sendMessage(plugin.languageManager.get("buy-not-enough-money",
                             "cost", economy.format(totalCost),
@@ -366,12 +372,14 @@ public class EconomyManager {
                     return;
                 }
                 EconomyResponse response = economy.withdrawPlayer(player, totalCost);
-                if (!response.transactionSuccess()) {
+                purchased = response.transactionSuccess();
+                if (!purchased) {
                     player.sendMessage(plugin.languageManager.get("buy-transaction-failed"));
                     plugin.soundManager.playBuyFail(player);
                     return;
                 }
-                record.pointsBought = (int) bought;
+            } finally {
+                record.finishPurchase(amount, purchased);
             }
 
             saveDailyUsageDataAsync();
@@ -431,7 +439,7 @@ public class EconomyManager {
             int actual;
             synchronized (record) {
                 record.resetIfNewDay();
-                long next = (long) record.pointsBought + amount;
+                long next = (long) record.pointsBought + record.pendingPurchases + amount;
                 if (give && next > Integer.MAX_VALUE) {
                     plugin.schedulerAdapter.runTask(sender, () ->
                             sender.sendMessage(plugin.languageManager.get("buy-invalid-number")));

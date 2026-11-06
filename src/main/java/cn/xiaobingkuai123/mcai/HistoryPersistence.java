@@ -11,6 +11,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /** Persists the canonical normalized conversation model as one YAML file per UUID. */
@@ -34,7 +35,16 @@ public final class HistoryPersistence {
             List<ConversationHistory.Message> messages = new ArrayList<>();
             ConfigurationSection section = yaml.getConfigurationSection("messages");
             if (section != null) {
+                TreeMap<Integer, String> orderedKeys = new TreeMap<>();
                 for (String key : section.getKeys(false)) {
+                    try {
+                        int index = Integer.parseInt(key);
+                        if (index >= 0 && key.equals(Integer.toString(index))) orderedKeys.put(index, key);
+                    } catch (NumberFormatException ignored) {
+                        // Ignore malformed entries; persisted message keys are zero-based integers.
+                    }
+                }
+                for (String key : orderedKeys.values()) {
                     String path = "messages." + key;
                     String role = yaml.getString(path + ".role", "");
                     if (!Set.of("user", "assistant", "tool").contains(role)) continue;
