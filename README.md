@@ -6,12 +6,33 @@ McAI is an AI conversation plugin for Minecraft Paper and Folia servers. Players
 
 ## What's new in 1.0.1
 
-Compared with the earlier `mcai-main.zip` version, 1.0.1 includes:
+Compared with `v1.0.0`, this release contains a substantial request, conversation, persistence, localization, and reliability update:
 
-- Configurable shared request options under `api.request` (temperature, top-p, retries, streaming, reasoning toggle/budget, and reasoning effort).
-- Configurable output-token budgets for each provider's thinking and non-thinking requests. The plugin enforces only the required minimums; the service/model determines the supported maximum.
-- Language selection by `language` identifier, loaded from `plugins/McAI/lang/<identifier>.yml`; a missing or invalid selected file falls back to `zh_CN`.
-- Expanded conversation history controls, persistence, streaming options, Gemini cached content, and documented configuration defaults.
+### Request and provider improvements
+
+- Added shared request configuration under `api.request`: temperature, top-p, retry count, streaming, reasoning enablement, reasoning budget, and reasoning effort.
+- Added per-provider output-token budgets for thinking and non-thinking requests. The plugin enforces only the required minimums; the selected service/model determines the supported maximum.
+- Unified request options across the DeepSeek, OpenAI Chat Completions, OpenAI Responses, Anthropic, and Gemini adapters.
+- Added configurable Anthropic API version handling and preserved Anthropic thinking blocks/signatures when replaying history.
+- Improved streaming request handling, including provider-specific SSE parsing, timeout watchdogs, completion detection, HTTP error reporting, and invalid-response handling.
+- Added prompt-cache usage reporting where providers expose cache statistics.
+- Added optional Gemini Cached Content support, with automatic fallback to inline conversation history if the cache request is unavailable.
+
+### Conversation and persistence improvements
+
+- Reworked conversation history around complete user/assistant rounds instead of an unstructured message list.
+- Added `sliding` and `accumulate` history modes, configurable round limits, persistence, and console history support.
+- Added Java inventory and Bedrock form flows for starting a new conversation window when an accumulate-mode limit is reached.
+- Added atomic per-player/console YAML history persistence and safer shutdown saving.
+- Improved daily point-usage persistence with asynchronous saves, shutdown draining, and atomic file replacement.
+
+### Localization, configuration, and quality
+
+- Language files are selected by the configured `language` identifier and loaded from `lang/<identifier>.yml`, rather than by a hard-coded Chinese/English list.
+- Invalid identifiers, missing files, empty files, and invalid YAML are handled with warnings and fallback to `zh_CN`.
+- Added clear comments for new configuration options, defaults, and token-budget minimums.
+- Added automated coverage for adapter request bodies, conversation history, language parsing/fallback validation, and token-budget behavior.
+- Updated the bundled default model/configuration examples and bumped the plugin/Maven version to `1.0.1`.
 
 ## Features
 
