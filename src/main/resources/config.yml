@@ -109,7 +109,7 @@ rate-limit:
 daily-limit:
   enabled: true
 
-# Permission groups share quota, question-length, and accumulate conversation limits.
+# Permission groups share quota, question-length, and conversation-history limits.
 # Groups are checked in file order; the last matching permission group takes precedence.
 permissions:
   groups:
@@ -117,17 +117,17 @@ permissions:
       # The fallback group is used when no other configured permission matches.
       max-points: 10
       max-question-length: 200
-      max-conversation-rounds: 5
+      max-history: 5
     vip:
       permission: "mcai.group.vip"
       max-points: 50
       max-question-length: 500
-      max-conversation-rounds: 10
+      max-history: 10
     admin:
       permission: "mcai.group.admin"
       max-points: -1
       max-question-length: 0
-      max-conversation-rounds: 20
+      max-history: 20
 
 sounds:
   enabled: true

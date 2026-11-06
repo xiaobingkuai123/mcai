@@ -91,14 +91,14 @@ public class EconomyManager {
         final String permission;
         final int maxPoints;
         final int maxQuestionLength;
-        final int maxConversationRounds;
+        final int maxHistory;
         GroupConfig(String name, String permission, int maxPoints, int maxQuestionLength,
-                    int maxConversationRounds) {
+                    int maxHistory) {
             this.name = name;
             this.permission = permission;
             this.maxPoints = maxPoints;
             this.maxQuestionLength = maxQuestionLength;
-            this.maxConversationRounds = maxConversationRounds;
+            this.maxHistory = maxHistory;
         }
     }
 
@@ -180,9 +180,6 @@ public class EconomyManager {
 
     public GroupConfig getGroupConfig(Player player) {
         ConfigurationSection groupsSection = plugin.getConfig().getConfigurationSection("permissions.groups");
-        if (groupsSection == null) {
-            groupsSection = plugin.getConfig().getConfigurationSection("daily-limit.groups");
-        }
         if (groupsSection == null) return defaultGroup();
 
         ConfigurationSection defaultSection = groupsSection.getConfigurationSection("default");
@@ -203,7 +200,7 @@ public class EconomyManager {
                 section.getString("permission", ""),
                 section.getInt("max-points", 10),
                 section.getInt("max-question-length", 200),
-                Math.max(0, section.getInt("max-conversation-rounds", plugin.historyMaxRounds)));
+                Math.max(0, section.getInt("max-history", plugin.historyMaxRounds)));
     }
 
     private GroupConfig defaultGroup() {
@@ -211,8 +208,7 @@ public class EconomyManager {
     }
 
     public int getConversationRoundLimit(Player player) {
-        return plugin.historyMode == ConversationHistory.Mode.ACCUMULATE
-                ? getGroupConfig(player).maxConversationRounds : plugin.getEffectiveMaxHistory(player);
+        return getGroupConfig(player).maxHistory;
     }
 
     public int getConversationRoundCount(Player player) {
@@ -224,7 +220,7 @@ public class EconomyManager {
         if (plugin.historyMode != ConversationHistory.Mode.ACCUMULATE) return true;
         int limit = getConversationRoundLimit(player);
         ConversationHistory history = plugin.chatManager.conversationMemory(player.getUniqueId(), limit);
-        if (limit > 0 && history.canAddRound()) return true;
+        if (history.canAddRound()) return true;
         player.sendMessage(plugin.languageManager.get("round-limit-reached", "limit", String.valueOf(limit)));
         plugin.openNextRoundPrompt(player);
         return false;
