@@ -73,8 +73,8 @@ api:
 
 chat:
   system-prompt: "You are a helpful Minecraft server assistant. Answer briefly and clearly."
-  max-history: 5
-  admin-max-history: 30
+  # Console history is independent of player permission groups.
+  console-max-history: 30
   log-to-console: true
   think-delay-ticks: 20
   history:

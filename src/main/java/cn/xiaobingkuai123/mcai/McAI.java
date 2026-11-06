@@ -31,11 +31,9 @@ public class McAI extends JavaPlugin {
     volatile int apiTimeoutSeconds;
     volatile int thinkDelayTicks;
     volatile String systemPrompt;
-    volatile int maxHistory;
-    volatile int adminMaxHistory;
+    volatile int consoleMaxHistory;
     volatile boolean logToConsole;
     volatile ConversationHistory.Mode historyMode;
-    volatile int historyMaxRounds;
     volatile boolean historyPersistenceEnabled;
     volatile boolean geminiCachedContentEnabled;
     volatile boolean roundPromptEnabled;
@@ -166,12 +164,10 @@ public class McAI extends JavaPlugin {
         proProviderName = getConfig().getString("api.pro-provider", "deepseek");
         apiTimeoutSeconds = getConfig().getInt("api.timeout-seconds", 120);
         systemPrompt = getConfig().getString("chat.system-prompt", "Minecraft助手");
-        maxHistory = getConfig().getInt("chat.max-history", 5);
-        adminMaxHistory = getConfig().getInt("chat.admin-max-history", 30);
+        consoleMaxHistory = Math.max(0, getConfig().getInt("chat.console-max-history", 30));
         logToConsole = getConfig().getBoolean("chat.log-to-console", true);
         String historyModeName = getConfig().getString("chat.history.mode", "sliding");
         historyMode = "accumulate".equalsIgnoreCase(historyModeName) ? ConversationHistory.Mode.ACCUMULATE : ConversationHistory.Mode.SLIDING;
-        historyMaxRounds = Math.max(0, maxHistory);
         historyPersistenceEnabled = getConfig().getBoolean("chat.history.persistence.enabled", true);
         geminiCachedContentEnabled = getConfig().getBoolean("api.gemini.cached-content.enabled", false);
         roundPromptEnabled = getConfig().getBoolean("chat.round-prompt.enabled", true);
@@ -226,10 +222,6 @@ public class McAI extends JavaPlugin {
                 .connectTimeout(Duration.ofSeconds(apiTimeoutSeconds))
                 .build();
         if (geminiCachedContentManager != null) geminiCachedContentManager.setClient(httpClient);
-    }
-
-    public int getEffectiveMaxHistory(Player player) {
-        return player.hasPermission("mcai.group.admin") ? adminMaxHistory : maxHistory;
     }
 
     public boolean isBedrockPlayer(Player player) {

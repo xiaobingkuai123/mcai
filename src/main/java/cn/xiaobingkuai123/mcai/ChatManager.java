@@ -2,6 +2,7 @@ package cn.xiaobingkuai123.mcai;
 
 import cn.xiaobingkuai123.mcai.adapter.ApiAdapter;
 import cn.xiaobingkuai123.mcai.adapter.ApiRequestOptions;
+import cn.xiaobingkuai123.mcai.adapter.CacheUsageParser;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
@@ -199,39 +200,6 @@ public class ChatManager {
         }
     }
 
-    private static ApiAdapter.CacheUsage extractCacheUsage(String body) {
-        try {
-            com.google.gson.JsonObject root = new com.google.gson.JsonParser().parse(body).getAsJsonObject();
-            com.google.gson.JsonObject usage = usageObject(root);
-            if (usage == null) return null;
-            com.google.gson.JsonObject details = usage.has("prompt_tokens_details") && usage.get("prompt_tokens_details").isJsonObject() ? usage.getAsJsonObject("prompt_tokens_details") : null;
-            if (details == null && usage.has("input_tokens_details") && usage.get("input_tokens_details").isJsonObject()) details = usage.getAsJsonObject("input_tokens_details");
-            if (details != null && details.has("cached_tokens")) {
-                long hit = details.get("cached_tokens").getAsLong();
-                return new ApiAdapter.CacheUsage("prompt_tokens_details.cached_tokens", hit, token(usage, "prompt_tokens") - hit);
-            }
-            if (usage.has("prompt_cache_hit_tokens")) return new ApiAdapter.CacheUsage("prompt_cache_hit_tokens", usage.get("prompt_cache_hit_tokens").getAsLong(), token(usage, "prompt_cache_miss_tokens"));
-            if (usage.has("cache_read_input_tokens")) return new ApiAdapter.CacheUsage("cache_read_input_tokens", usage.get("cache_read_input_tokens").getAsLong(), token(usage, "cache_creation_input_tokens"));
-            if (usage.has("cachedContentTokenCount")) return new ApiAdapter.CacheUsage("cachedContentTokenCount", usage.get("cachedContentTokenCount").getAsLong(), token(usage, "promptTokenCount") - usage.get("cachedContentTokenCount").getAsLong());
-        } catch (RuntimeException ignored) { }
-        return null;
-    }
-
-    private static com.google.gson.JsonObject usageObject(com.google.gson.JsonObject root) {
-        com.google.gson.JsonObject usage = root.has("usage") && root.get("usage").isJsonObject() ? root.getAsJsonObject("usage") : null;
-        if (usage == null && root.has("usageMetadata") && root.get("usageMetadata").isJsonObject()) usage = root.getAsJsonObject("usageMetadata");
-        if (usage == null && root.has("response") && root.get("response").isJsonObject()) {
-            com.google.gson.JsonObject response = root.getAsJsonObject("response");
-            usage = response.has("usage") && response.get("usage").isJsonObject() ? response.getAsJsonObject("usage") : null;
-            if (usage == null && response.has("usageMetadata") && response.get("usageMetadata").isJsonObject()) usage = response.getAsJsonObject("usageMetadata");
-        }
-        return usage;
-    }
-
-    private static long token(com.google.gson.JsonObject object, String name) {
-        return object.has(name) && object.get(name).isJsonPrimitive() ? object.get(name).getAsLong() : 0;
-    }
-
     private void logCacheUsage(ApiAdapter.CacheUsage usage) {
         if (usage == null) {
             plugin.getLogger().info("AI prompt cache: not-reported (field=none)");
@@ -260,14 +228,14 @@ public class ChatManager {
         String mode = isPro ? (isThinking ? "pro_think" : "pro") : (isThinking ? "normal_think" : "normal");
         plugin.schedulerAdapter.runAsync(() -> {
             try {
-                ApiAdapter.AdapterResponse response = callApi(McAI.CONSOLE_UUID, question, mode, plugin.adminMaxHistory, null);
+                ApiAdapter.AdapterResponse response = callApi(McAI.CONSOLE_UUID, question, mode, plugin.consoleMaxHistory, null, plugin::isEnabled);
                 String answer = response.content();
                 if (answer == null || answer.isBlank()) {
                     plugin.getLogger().warning("[" + plugin.languageManager.get("log-console-answer-prefix")
                             + "] " + plugin.languageManager.get("console-name") + ": " + answer);
                     return;
                 }
-                ConversationHistory memory = conversationMemory(McAI.CONSOLE_UUID, plugin.adminMaxHistory);
+                ConversationHistory memory = conversationMemory(McAI.CONSOLE_UUID, plugin.consoleMaxHistory);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
                 if (isAnthropicMode(mode) && response.reasoning() != null && !response.reasoning().isBlank()) {
@@ -305,16 +273,6 @@ public class ChatManager {
             }
             return new ConversationHistory(plugin.historyMode, Math.max(0, maxRounds));
         });
-    }
-
-    private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
-            String mode, int effectiveHistory) throws Exception {
-        return callApi(userId, question, mode, effectiveHistory, null);
-    }
-    private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
-            String mode, int effectiveHistory,
-            Consumer<AiStreamClient.Delta> streamListener) throws Exception {
-        return callApi(userId, question, mode, effectiveHistory, streamListener, plugin::isEnabled);
     }
 
     private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
@@ -391,9 +349,11 @@ public class ChatManager {
             String body = httpResponse.body();
             try {
                 ApiAdapter.AdapterResponse response = adapter.parseResponse(body);
-                ApiAdapter.CacheUsage cacheUsage = extractCacheUsage(body);
+                ApiAdapter.CacheUsage cacheUsage = CacheUsageParser.parse(
+                        new com.google.gson.JsonParser().parse(body).getAsJsonObject());
                 logCacheUsage(cacheUsage);
-                return new ApiAdapter.AdapterResponse(response.content(), response.reasoning(), cacheUsage);
+                return new ApiAdapter.AdapterResponse(response.content(), response.reasoning(),
+                        cacheUsage, response.reasoningSignature());
             } catch (com.google.gson.JsonParseException | IllegalStateException e) {
                 String contentType = httpResponse.headers().firstValue("Content-Type").orElse("unknown");
                 plugin.getLogger().warning("AI provider returned an invalid response (content-type="

@@ -8,7 +8,6 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashMap;
@@ -27,7 +26,7 @@ public class LanguageManager {
         reload();
     }
 
-    /** Loads only the configured language file; zh_CN remains the compatibility fallback. */
+    /** Loads only the configured language file; zh_CN is the fallback for missing or invalid language files. */
     public synchronized void reload() {
         String requestedLanguage = plugin.getConfig().getString("language", DEFAULT_LANGUAGE);
         if (!isValidLanguageId(requestedLanguage)) {

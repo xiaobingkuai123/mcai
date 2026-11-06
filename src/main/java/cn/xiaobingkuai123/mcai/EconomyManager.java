@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.RejectedExecutionException;
 
 public class EconomyManager {
+    private static final int DEFAULT_HISTORY_ROUNDS = 5;
     private final McAI plugin;
     final Map<UUID, DailyUsageRecord> dailyUsageRecords = new ConcurrentHashMap<>();
     private final ExecutorService persistenceExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -27,20 +28,27 @@ public class EconomyManager {
     private volatile File dailyUsageFile;
     private volatile boolean persistenceClosed;
 
+    enum PurchaseStatus { RESERVED, INVALID_AMOUNT, DAILY_LIMIT_REACHED }
+
+    record PurchaseReservation(PurchaseStatus status, long remainingAllowance) {}
+
     static class DailyUsageRecord {
         String currentDate = "";
         int pointsUsed;
         int pointsBought;
         private int pendingPurchases;
 
-        // -1: reserved, -2: integer capacity exceeded, otherwise remaining daily allowance.
-        synchronized long reservePurchase(int amount, int dailyLimit) {
+        synchronized PurchaseReservation reservePurchase(int amount, int dailyLimit) {
             resetIfNewDay();
             long total = (long) pointsBought + pendingPurchases;
-            if (amount <= 0 || total + amount > Integer.MAX_VALUE) return -2;
-            if (dailyLimit >= 0 && total + amount > dailyLimit) return Math.max(0L, dailyLimit - total);
+            if (amount <= 0 || total + amount > Integer.MAX_VALUE) {
+                return new PurchaseReservation(PurchaseStatus.INVALID_AMOUNT, 0);
+            }
+            if (dailyLimit >= 0 && total + amount > dailyLimit) {
+                return new PurchaseReservation(PurchaseStatus.DAILY_LIMIT_REACHED, Math.max(0L, dailyLimit - total));
+            }
             pendingPurchases += amount;
-            return -1;
+            return new PurchaseReservation(PurchaseStatus.RESERVED, 0);
         }
 
         synchronized void finishPurchase(int amount, boolean success) {
@@ -48,7 +56,6 @@ public class EconomyManager {
             pendingPurchases -= amount;
             if (success) pointsBought += amount;
         }
-
 
         synchronized void resetIfNewDay() {
             String today = LocalDate.now().toString();
@@ -58,10 +65,6 @@ public class EconomyManager {
                 pointsBought = 0;
             }
         }
-        synchronized void addUsedPoints(int points) { resetIfNewDay(); pointsUsed += points; }
-        synchronized void addBoughtPoints(int points) { resetIfNewDay(); pointsBought += points; }
-        synchronized void subtractBoughtPoints(int points) { resetIfNewDay(); pointsBought -= points; }
-        synchronized void subtractUsedPoints(int points) { resetIfNewDay(); pointsUsed = Math.max(0, pointsUsed - points); }
         synchronized int getRemaining(int maxFreePoints) { resetIfNewDay(); return maxFreePoints + pointsBought - pointsUsed; }
         synchronized Map<String, Object> serialize() {
             resetIfNewDay();
@@ -213,16 +216,16 @@ public class EconomyManager {
         return fallback;
     }
 
-    private GroupConfig groupConfig(String name, ConfigurationSection section) {
+    static GroupConfig groupConfig(String name, ConfigurationSection section) {
         return new GroupConfig(name,
                 section.getString("permission", ""),
                 section.getInt("max-points", 10),
                 section.getInt("max-question-length", 200),
-                Math.max(0, section.getInt("max-history", plugin.historyMaxRounds)));
+                Math.max(0, section.getInt("max-history", DEFAULT_HISTORY_ROUNDS)));
     }
 
     private GroupConfig defaultGroup() {
-        return new GroupConfig("default", "", 10, 200, Math.max(0, plugin.historyMaxRounds));
+        return new GroupConfig("default", "", 10, 200, DEFAULT_HISTORY_ROUNDS);
     }
 
     public int getConversationRoundLimit(Player player) {
@@ -353,11 +356,11 @@ public class EconomyManager {
 
             DailyUsageRecord record = dailyUsageRecords.computeIfAbsent(
                     player.getUniqueId(), k -> new DailyUsageRecord());
-            long reservation = record.reservePurchase(amount, plugin.maxBuyPerDay);
-            if (reservation != -1) {
-                player.sendMessage(reservation == -2
+            PurchaseReservation reservation = record.reservePurchase(amount, plugin.maxBuyPerDay);
+            if (reservation.status() != PurchaseStatus.RESERVED) {
+                player.sendMessage(reservation.status() == PurchaseStatus.INVALID_AMOUNT
                         ? plugin.languageManager.get("buy-invalid-number")
-                        : plugin.languageManager.get("buy-max-today", "remain", String.valueOf(reservation)));
+                        : plugin.languageManager.get("buy-max-today", "remain", String.valueOf(reservation.remainingAllowance())));
                 plugin.soundManager.playBuyFail(player);
                 return;
             }

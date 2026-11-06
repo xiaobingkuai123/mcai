@@ -85,7 +85,7 @@ The complete default configuration is in [`src/main/resources/config.yml`](src/m
 | `api.request.thinking.budget` | Shared reasoning budget; default `4096`, minimum `1024`. Provider/model limits still apply. |
 | `api.request.reasoning-effort` | Reasoning effort sent where supported; default `medium`. |
 | `api.timeout-seconds` | HTTP request timeout; default `120`. |
-| `chat.system-prompt`, `chat.max-history`, `chat.admin-max-history` | Prompt and history limits. |
+| `chat.system-prompt`, `chat.console-max-history` | System prompt and console history limit (default: 30 rounds). Player history limits use `permissions.groups.*.max-history`. |
 | `chat.history.*`, `chat.streaming.*` | History mode/persistence and stream/BossBar settings. In `accumulate` mode, the round limit comes from the matching permission group. |
 | `points.*`, `rate-limit.*`, `daily-limit.*` | Point costs, request limits, and the daily-limit toggle. |
 | `permissions.groups.*` | Unified permission groups for daily points, question length, and per-group maximum history. |

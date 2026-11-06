@@ -192,9 +192,10 @@ public final class AiStreamClient {
         if (!parsed.isJsonObject()) throw new ProtocolException("Expected a stream JSON object");
         JsonObject root = parsed.getAsJsonObject();
         String type = string(root, "type");
-        captureCacheUsage(adapter, root, accumulator);
+        ApiAdapter.CacheUsage usage = CacheUsageParser.parse(root);
+        if (usage != null) accumulator.cacheUsage = usage;
 
-        if ("error".equals(eventName) || "error".equals(type) || root.has("error")) {
+        if ("error".equals(type) || root.has("error")) {
             throw new ProtocolException("Provider returned a stream error");
         }
 
@@ -206,38 +207,6 @@ public final class AiStreamClient {
             parseGemini(root, accumulator);
         } else {
             parseChatCompletions(root, accumulator);
-        }
-    }
-
-    private static void captureCacheUsage(ApiAdapter adapter, JsonObject root, Accumulator accumulator) {
-        JsonObject usage = object(root, "usage");
-        if (usage == null) usage = object(root, "usageMetadata");
-        if (usage == null) {
-            JsonObject response = object(root, "response");
-            if (response != null) {
-                usage = object(response, "usage");
-                if (usage == null) usage = object(response, "usageMetadata");
-            }
-        }
-        if (usage == null) return;
-        JsonObject details = object(usage, "prompt_tokens_details");
-        if (details == null) details = object(usage, "input_tokens_details");
-        if (details != null && details.has("cached_tokens") && !details.get("cached_tokens").isJsonNull()) {
-            long hit = details.get("cached_tokens").getAsLong();
-            accumulator.cacheUsage = new ApiAdapter.CacheUsage("prompt_tokens_details.cached_tokens", hit, number(usage, "prompt_tokens") - hit);
-            return;
-        }
-        if (usage.has("prompt_cache_hit_tokens") && !usage.get("prompt_cache_hit_tokens").isJsonNull()) {
-            accumulator.cacheUsage = new ApiAdapter.CacheUsage("prompt_cache_hit_tokens", usage.get("prompt_cache_hit_tokens").getAsLong(), number(usage, "prompt_cache_miss_tokens"));
-            return;
-        }
-        if (usage.has("cache_read_input_tokens") && !usage.get("cache_read_input_tokens").isJsonNull()) {
-            accumulator.cacheUsage = new ApiAdapter.CacheUsage("cache_read_input_tokens", usage.get("cache_read_input_tokens").getAsLong(), number(usage, "cache_creation_input_tokens"));
-            return;
-        }
-        if (usage.has("cachedContentTokenCount") && !usage.get("cachedContentTokenCount").isJsonNull()) {
-            long hit = usage.get("cachedContentTokenCount").getAsLong();
-            accumulator.cacheUsage = new ApiAdapter.CacheUsage("cachedContentTokenCount", hit, number(usage, "promptTokenCount") - hit);
         }
     }
 
@@ -336,11 +305,6 @@ public final class AiStreamClient {
     private static JsonObject object(JsonObject root, String key) {
         JsonElement element = root.get(key);
         return element != null && element.isJsonObject() ? element.getAsJsonObject() : null;
-    }
-
-    private static long number(JsonObject root, String key) {
-        JsonElement value = root.get(key);
-        return value != null && value.isJsonPrimitive() ? value.getAsLong() : 0;
     }
 
     private static JsonArray array(JsonObject root, String key) {

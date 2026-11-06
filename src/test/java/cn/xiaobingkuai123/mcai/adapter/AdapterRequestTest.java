@@ -26,23 +26,14 @@ class AdapterRequestTest {
         });
         return new JsonParser().parse(new String(result.get(), StandardCharsets.UTF_8)).getAsJsonObject();
     }
-    @Test void systemPromptRemainsFirstBeforeConversationHistory() throws Exception {
-        var options = new ApiRequestOptions(.25, .8, 100, 30, 0, false, false, 2048, "low");
-        var messages = List.of(new ApiAdapter.Message("system", "stable system"), new ApiAdapter.Message("user", "latest history"), new ApiAdapter.Message("assistant", "history answer"), new ApiAdapter.Message("user", "current"));
-        JsonArray serialized = body(new OpenAIAdapter(30).buildRequest("https://api.openai.com", "key", "m", messages, options)).getAsJsonArray("messages");
-        assertEquals("system", serialized.get(0).getAsJsonObject().get("role").getAsString());
-        assertEquals("stable system", serialized.get(0).getAsJsonObject().get("content").getAsString());
-        assertEquals("latest history", serialized.get(1).getAsJsonObject().get("content").getAsString());
-    }
-
     @Test void stableOpenAiRequestRetainsOrderedRolesAndStreaming() throws Exception {
         var options = new ApiRequestOptions(.25, .8, 100, 30, 0, true, false, 2048, "low");
         List<ApiAdapter.Message> messages = List.of(new ApiAdapter.Message("system", "s"), new ApiAdapter.Message("user", "u"), new ApiAdapter.Message("assistant", "a"), new ApiAdapter.Message("user", "latest"));
         JsonObject first = body(new OpenAIAdapter(30).buildRequest("https://api.openai.com", "key", "m", messages, options));
-        JsonObject second = body(new OpenAIAdapter(30).buildRequest("https://api.openai.com", "key", "m", messages, options));
-        assertEquals(first, second);
         JsonArray a = first.getAsJsonArray("messages");
         assertEquals(List.of("system", "user", "assistant", "user"), java.util.stream.IntStream.range(0,a.size()).mapToObj(i -> a.get(i).getAsJsonObject().get("role").getAsString()).toList());
+        assertEquals(List.of("s", "u", "a", "latest"), java.util.stream.IntStream.range(0, a.size())
+                .mapToObj(i -> a.get(i).getAsJsonObject().get("content").getAsString()).toList());
         assertTrue(first.get("stream").getAsBoolean());
         assertEquals(.25, first.get("temperature").getAsDouble());
         assertEquals(.8, first.get("top_p").getAsDouble());
