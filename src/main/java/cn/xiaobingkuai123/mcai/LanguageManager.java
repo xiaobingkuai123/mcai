@@ -1,55 +1,130 @@
 package cn.xiaobingkuai123.mcai;
+
 import org.bukkit.ChatColor;
-import org.bukkit.configuration.file.*;
-import java.io.*;
+import org.bukkit.configuration.InvalidConfigurationException;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.nio.file.Files;
+import java.util.HashMap;
+import java.util.Map;
 
 public class LanguageManager {
+    private static final String DEFAULT_LANGUAGE = "zh_CN";
+    private static final String LANGUAGE_ID_PATTERN = "[A-Za-z0-9_-]+";
+
     private final McAI plugin;
-    private final Map<String, FileConfiguration> languageConfigs = new HashMap<>();
-    private String currentLanguage;
+    private volatile Map<String, FileConfiguration> languageConfigs = Map.of();
+    private volatile String currentLanguage = DEFAULT_LANGUAGE;
 
     public LanguageManager(McAI plugin) {
         this.plugin = plugin;
-        this.currentLanguage = plugin.getConfig().getString("language", "zh_CN");
-        for (String lang : new String[]{"zh_CN", "en_US"}) {
-            saveDefaultLanguageFile(lang);
-            loadLanguageFile(lang);
+        reload();
+    }
+
+    /** Loads only the configured language file; zh_CN remains the compatibility fallback. */
+    public synchronized void reload() {
+        String requestedLanguage = plugin.getConfig().getString("language", DEFAULT_LANGUAGE);
+        if (!isValidLanguageId(requestedLanguage)) {
+            plugin.getLogger().warning("Invalid language identifier; using " + DEFAULT_LANGUAGE + ".");
+            requestedLanguage = DEFAULT_LANGUAGE;
         }
+
+        Map<String, FileConfiguration> loadedConfigs = new HashMap<>();
+        FileConfiguration fallback = loadLanguageFile(DEFAULT_LANGUAGE);
+        if (fallback != null) {
+            loadedConfigs.put(DEFAULT_LANGUAGE, fallback);
+        }
+
+        FileConfiguration selected = requestedLanguage.equals(DEFAULT_LANGUAGE)
+                ? fallback : loadLanguageFile(requestedLanguage);
+        if (selected == null) {
+            plugin.getLogger().warning("Language file '" + requestedLanguage
+                    + ".yml' is missing or invalid; using " + DEFAULT_LANGUAGE + ".");
+            requestedLanguage = DEFAULT_LANGUAGE;
+            selected = fallback;
+        }
+        if (selected != null) {
+            loadedConfigs.put(requestedLanguage, selected);
+        }
+
+        languageConfigs = Map.copyOf(loadedConfigs);
+        currentLanguage = requestedLanguage;
     }
 
-    private void saveDefaultLanguageFile(String lang) {
-        File langDir = new File(plugin.getDataFolder(), "lang");
-        if (!langDir.exists()) langDir.mkdirs();
-        File langFile = new File(langDir, lang + ".yml");
-        if (!langFile.exists()) plugin.saveResource("lang/" + lang + ".yml", false);
-    }
+    private FileConfiguration loadLanguageFile(String language) {
+        String resourcePath = "lang/" + language + ".yml";
+        File languageDirectory = new File(plugin.getDataFolder(), "lang");
+        File languageFile = new File(languageDirectory, language + ".yml");
 
-    private void loadLanguageFile(String lang) {
-        File file = new File(plugin.getDataFolder(), "lang/" + lang + ".yml");
-        if (file.exists()) {
-            FileConfiguration config = YamlConfiguration.loadConfiguration(file);
-            InputStream defaultStream = plugin.getResource("lang/" + lang + ".yml");
-            if (defaultStream != null) {
-                config.setDefaults(YamlConfiguration.loadConfiguration(
-                        new InputStreamReader(defaultStream, StandardCharsets.UTF_8)));
+        if (!languageFile.isFile()) {
+            try (InputStream resource = plugin.getResource(resourcePath)) {
+                if (resource == null) {
+                    return null;
+                }
+                Files.createDirectories(languageDirectory.toPath());
+                plugin.saveResource(resourcePath, false);
+            } catch (IOException | IllegalArgumentException e) {
+                plugin.getLogger().warning("Unable to create language file '" + language
+                        + ".yml': " + e.getMessage());
+                return null;
             }
-            languageConfigs.put(lang, config);
         }
+
+        FileConfiguration config;
+        try {
+            config = parseLanguage(Files.readString(languageFile.toPath(), StandardCharsets.UTF_8));
+        } catch (IOException | InvalidConfigurationException e) {
+            plugin.getLogger().warning("Unable to load language file '" + language
+                    + ".yml': " + e.getMessage());
+            return null;
+        }
+
+        // Packaged defaults fill missing keys while retaining server-side edits.
+        try (InputStream defaults = plugin.getResource(resourcePath)) {
+            if (defaults != null) {
+                FileConfiguration defaultsConfig = parseLanguage(
+                        new String(defaults.readAllBytes(), StandardCharsets.UTF_8));
+                config.setDefaults(defaultsConfig);
+            }
+        } catch (IOException | InvalidConfigurationException e) {
+            plugin.getLogger().warning("Unable to load packaged defaults for language '"
+                    + language + "': " + e.getMessage());
+        }
+        return config;
     }
 
-    public void reload() {
-        currentLanguage = plugin.getConfig().getString("language", "zh_CN");
-        languageConfigs.clear();
-        for (String lang : new String[]{"zh_CN", "en_US"}) {
-            loadLanguageFile(lang);
+    static FileConfiguration parseLanguage(String yaml) throws InvalidConfigurationException {
+        YamlConfiguration config = new YamlConfiguration();
+        config.loadFromString(yaml);
+        if (config.getKeys(false).isEmpty()) {
+            throw new InvalidConfigurationException("Language file must contain message entries");
         }
+        for (String key : config.getKeys(false)) {
+            if (!(config.get(key) instanceof String)) {
+                throw new InvalidConfigurationException("Language entry '" + key + "' must be a string");
+            }
+        }
+        return config;
+    }
+
+    static boolean isValidLanguageId(String language) {
+        return language != null && language.matches(LANGUAGE_ID_PATTERN);
     }
 
     public String get(String key) {
-        FileConfiguration config = languageConfigs.getOrDefault(currentLanguage, languageConfigs.get("zh_CN"));
-        return ChatColor.translateAlternateColorCodes('&', config.getString(key, key));
+        Map<String, FileConfiguration> configs = languageConfigs;
+        FileConfiguration config = configs.get(currentLanguage);
+        if (config == null) {
+            config = configs.get(DEFAULT_LANGUAGE);
+        }
+        String message = config == null ? key : config.getString(key, key);
+        return ChatColor.translateAlternateColorCodes('&', message);
     }
 
     public String get(String key, String... placeholders) {

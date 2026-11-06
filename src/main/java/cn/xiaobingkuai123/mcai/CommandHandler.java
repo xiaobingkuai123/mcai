@@ -45,7 +45,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             case "give" -> handleGive(player, args, argIndex);
             case "take" -> handleTake(player, args, argIndex);
             case "clear" -> {
-                plugin.conversationHistory.remove(player.getUniqueId());
+                plugin.clearPlayerHistory(player.getUniqueId());
                 player.sendMessage(plugin.languageManager.get("history-cleared"));
                 plugin.soundManager.playHistoryCleared(player);
             }
@@ -67,7 +67,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 int idx = 1; boolean think = false;
                 if (idx < args.length && args[idx].equalsIgnoreCase("think")) { think = true; idx++; }
                 if (idx >= args.length) { sender.sendMessage(plugin.languageManager.get("console-usage-chat")); return true; }
-                sender.sendMessage(plugin.languageManager.get("console-thinking"));
+                if (think) sender.sendMessage(plugin.languageManager.get("console-thinking"));
                 chatManager.askConsole(String.join(" ", Arrays.copyOfRange(args, idx, args.length)), false, think);
             }
             case "pro" -> {
@@ -75,7 +75,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 int idx = 2; boolean think = false;
                 if (idx < args.length && args[idx].equalsIgnoreCase("think")) { think = true; idx++; }
                 if (idx >= args.length) { sender.sendMessage(plugin.languageManager.get("console-message-required")); return true; }
-                sender.sendMessage(plugin.languageManager.get("console-thinking"));
+                if (think) sender.sendMessage(plugin.languageManager.get("console-thinking"));
                 chatManager.askConsole(String.join(" ", Arrays.copyOfRange(args, idx, args.length)), true, think);
             }
             case "give" -> {
@@ -92,7 +92,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 int amount; try { amount = Integer.parseInt(args[2]); } catch (NumberFormatException e) { sender.sendMessage(plugin.languageManager.get("buy-invalid-number")); return true; }
                 economyManager.takePoints(sender, target, amount);
             }
-            case "clear" -> { plugin.conversationHistory.remove(McAI.CONSOLE_UUID); sender.sendMessage(plugin.languageManager.get("console-clear")); }
+            case "clear" -> { plugin.clearPlayerHistory(McAI.CONSOLE_UUID); sender.sendMessage(plugin.languageManager.get("console-clear")); }
             case "reload" -> { if (performReload(sender)) sender.sendMessage(plugin.languageManager.get("reload-success")); else sender.sendMessage(plugin.languageManager.get("reload-fail")); }
             case "buy" -> sender.sendMessage(plugin.languageManager.get("console-buy-disabled"));
             default -> sender.sendMessage(plugin.languageManager.get("console-usage"));

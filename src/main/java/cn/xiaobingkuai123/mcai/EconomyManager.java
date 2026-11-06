@@ -11,11 +11,21 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 
 public class EconomyManager {
     private final McAI plugin;
     final Map<UUID, DailyUsageRecord> dailyUsageRecords = new ConcurrentHashMap<>();
-    private File dailyUsageFile;
+    private final ExecutorService persistenceExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "mcai-dayuse-save");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private volatile File dailyUsageFile;
+    private volatile boolean persistenceClosed;
 
     static class DailyUsageRecord {
         String currentDate = "";
@@ -111,14 +121,48 @@ public class EconomyManager {
             yaml.createSection(entry.getKey().toString(), entry.getValue().serialize());
         }
         try {
-            yaml.save(dailyUsageFile);
+            File parent = dailyUsageFile.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.isDirectory()) {
+                throw new IOException("data directory unavailable");
+            }
+            File temp = new File(dailyUsageFile.getPath() + ".tmp");
+            yaml.save(temp);
+            java.nio.file.Files.move(temp.toPath(), dailyUsageFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            try {
+                java.nio.file.Files.move(new File(dailyUsageFile.getPath() + ".tmp").toPath(), dailyUsageFile.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException moveFailure) {
+                plugin.getLogger().warning(plugin.languageManager.get("log-dayuse-save-failure"));
+            }
         } catch (IOException e) {
             plugin.getLogger().warning(plugin.languageManager.get("log-dayuse-save-failure"));
         }
     }
 
     public void saveDailyUsageDataAsync() {
-        plugin.schedulerAdapter.runAsync(this::saveDailyUsageData);
+        if (persistenceClosed) return;
+        try {
+            persistenceExecutor.execute(this::saveDailyUsageData);
+        } catch (RejectedExecutionException ignored) {
+            // Shutdown races are completed by closeAndSave().
+        }
+    }
+
+    void closeAndSave() {
+        persistenceClosed = true;
+        persistenceExecutor.shutdown();
+        try {
+            if (!persistenceExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                persistenceExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            persistenceExecutor.shutdownNow();
+        }
+        saveDailyUsageData();
     }
 
     public int getCostForMode(String mode) {

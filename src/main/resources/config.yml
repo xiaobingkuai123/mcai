@@ -1,64 +1,98 @@
+# Language filename under the plugin's lang/ directory, without the .yml extension (for example: zh_CN).
+# Default: zh_CN. If the selected file is missing or invalid, the plugin falls back to zh_CN.
 language: "zh_CN"
+
 api:
   normal-provider: "deepseek"
   pro-provider: "deepseek"
   timeout-seconds: 120
+  request:
+    # Shared defaults. Adapters omit unsupported provider-specific fields.
+    temperature: 0.7
+    top-p: 1.0
+    max-retries: 1
+    streaming: true
+    thinking:
+      enabled: true
+      # Token budget reserved for model reasoning. Default: 4096; minimum: 1024; no plugin-imposed upper limit (the provider/model may impose one).
+      budget: 4096
+    reasoning-effort: "medium"
   deepseek:
     key: "sk-xxx"
     base-url: "https://api.deepseek.com"
     api-type: "chat"
-    normal-model: "deepseek-chat"
-    normal-think-model: "deepseek-reasoner"
-    pro-model: "deepseek-chat"
-    pro-think-model: "deepseek-reasoner"
+    # These are LinkAPI model IDs. Change them if using another endpoint.
+    normal-model: "deepseek-v4.1-flash"
+    normal-think-model: "deepseek-v4-pro"
+    pro-model: "deepseek-v4.1-flash"
+    pro-think-model: "deepseek-v4-pro"
+    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-fast: 4096
+    # Maximum generated output tokens for thinking requests. Default: 64000; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-think: 64000
   openai:
     key: "sk-xxx"
     base-url: "https://api.openai.com"
-    api-type: "chat"
-    normal-model: "gpt-4o-mini"
-    normal-think-model: "gpt-4o"
-    pro-model: "gpt-4o"
-    pro-think-model: "gpt-4o"
+    # Use responses for OpenAI reasoning models. Chat Completions gpt-4o is not a reasoning model.
+    api-type: "responses"
+    normal-model: "gpt-6.1-sol"
+    normal-think-model: "gpt-6.1-sol"
+    pro-model: "gpt-6.1-sol"
+    pro-think-model: "gpt-6.1-sol"
+    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-fast: 4096
+    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-think: 32768
   anthropic:
     key: "sk-ant-xxx"
     base-url: "https://api.anthropic.com"
     api-type: "messages"
+    api-version: "2023-06-01"
     normal-model: "claude-sonnet-4-20250514"
     normal-think-model: "claude-sonnet-4-20250514"
     pro-model: "claude-opus-4-20250514"
     pro-think-model: "claude-opus-4-20250514"
+    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-fast: 4096
+    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-think: 32768
   gemini:
     key: "AIza..."
     base-url: "https://generativelanguage.googleapis.com"
     api-type: "gemini"
+    cached-content:
+      # Explicit Gemini Cached Content is optional; unsupported gateways fall back to inline history.
+      enabled: false
     normal-model: "gemini-2.5-flash"
     normal-think-model: "gemini-2.5-flash"
     pro-model: "gemini-2.5-pro"
     pro-think-model: "gemini-2.5-pro"
+    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-fast: 4096
+    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-think: 32768
+
 chat:
-  system-prompt: "你是一个Minecraft服务器助手。请用中文回答，简洁友好，尽量控制在50字以内。"
+  system-prompt: "You are a helpful Minecraft server assistant. Answer briefly and clearly."
   max-history: 5
   admin-max-history: 30
   log-to-console: true
   think-delay-ticks: 20
+  history:
+    # sliding keeps the latest complete rounds; accumulate stops after max-rounds.
+    mode: sliding
+    max-rounds: 5
+    persistence:
+      enabled: true
+  round-prompt:
+    enabled: true
   streaming:
     enabled: true
-    # Boss 条刷新间隔，单位 tick。4 = 200ms
     update-ticks: 4
-    # Boss 条最多显示最近多少个字符（不含阶段标题）
     window-chars: 48
-    # 思考结束后是否把完整思考过程发到聊天栏
     show-reasoning-in-chat: true
-    # 回答结束后 Boss 条保留多少 tick 再隐藏。20 tick = 1 秒
     bossbar-hold-ticks: 40
+
 points:
   normal-cost: 1
   normal-think-cost: 2
@@ -66,9 +100,11 @@ points:
   pro-think-cost: 6
   cost-per-point: 100.0
   max-buy-per-day: 20
+
 rate-limit:
   enabled: true
   per-minute: 3
+
 daily-limit:
   enabled: true
   groups:
@@ -83,6 +119,7 @@ daily-limit:
       permission: "mcai.group.admin"
       max-points: -1
       max-question-length: 0
+
 sounds:
   enabled: true
   global-volume: 0.5

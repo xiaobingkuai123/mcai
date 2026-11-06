@@ -6,12 +6,13 @@ import com.google.gson.*;
 import java.io.*;
 import java.net.URI;
 import java.net.http.*;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -83,7 +84,8 @@ public final class AiStreamClient {
 
                 return new ApiAdapter.AdapterResponse(
                         accumulator.content.toString(),
-                        accumulator.reasoning.length() == 0 ? null : accumulator.reasoning.toString()
+                        accumulator.reasoning.length() == 0 ? null : accumulator.reasoning.toString(),
+                        accumulator.cacheUsage
                 );
             } catch (IOException e) {
                 if (timedOut.get()) throw new HttpTimeoutException("AI stream timed out");
@@ -106,12 +108,7 @@ public final class AiStreamClient {
     }
 
     private static HttpRequest toStreamingRequest(ApiAdapter adapter, HttpRequest original) throws Exception {
-        byte[] requestBytes = readRequestBody(original);
-        JsonObject body = new JsonParser()
-                .parse(new String(requestBytes, StandardCharsets.UTF_8))
-                .getAsJsonObject();
         URI uri = original.uri();
-
         if (adapter instanceof GeminiAdapter) {
             String url = uri.toString();
             if (!url.contains(":generateContent")) {
@@ -120,50 +117,19 @@ public final class AiStreamClient {
             url = url.replace(":generateContent", ":streamGenerateContent");
             url += url.contains("?") ? "&alt=sse" : "?alt=sse";
             uri = URI.create(url);
-        } else {
-            body.addProperty("stream", true);
         }
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(original.timeout().orElse(Duration.ofSeconds(120)));
-
         original.headers().map().forEach((name, values) -> {
             if (!name.equalsIgnoreCase("Accept") && !name.equalsIgnoreCase("Content-Length")) {
                 values.forEach(value -> builder.header(name, value));
             }
         });
-
         builder.header("Accept", "text/event-stream");
-        builder.POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
+        builder.method(original.method(), original.bodyPublisher().orElseThrow(
+                () -> new IOException("Missing request body")));
         return builder.build();
-    }
-
-    private static byte[] readRequestBody(HttpRequest request) throws Exception {
-        HttpRequest.BodyPublisher publisher = request.bodyPublisher()
-                .orElseThrow(() -> new IOException("Missing request body"));
-
-        CompletableFuture<byte[]> result = new CompletableFuture<>();
-
-        publisher.subscribe(new Flow.Subscriber<ByteBuffer>() {
-            private final ByteArrayOutputStream output = new ByteArrayOutputStream();
-
-            @Override public void onSubscribe(Flow.Subscription subscription) {
-                subscription.request(Long.MAX_VALUE);
-            }
-            @Override public void onNext(ByteBuffer buffer) {
-                byte[] bytes = new byte[buffer.remaining()];
-                buffer.get(bytes);
-                output.writeBytes(bytes);
-            }
-            @Override public void onError(Throwable throwable) {
-                result.completeExceptionally(throwable);
-            }
-            @Override public void onComplete() {
-                result.complete(output.toByteArray());
-            }
-        });
-
-        return result.get(10, TimeUnit.SECONDS);
     }
 
     private static void readEvents(BufferedReader reader, ApiAdapter adapter, Accumulator accumulator) throws Exception {
@@ -209,6 +175,7 @@ public final class AiStreamClient {
 
         JsonObject root = new JsonParser().parse(data).getAsJsonObject();
         String type = string(root, "type");
+        captureCacheUsage(adapter, root, accumulator);
 
         if ("error".equals(eventName) || "error".equals(type) || root.has("error")) {
             throw new IOException("Provider returned a stream error");
@@ -222,6 +189,38 @@ public final class AiStreamClient {
             parseGemini(root, accumulator);
         } else {
             parseChatCompletions(root, accumulator);
+        }
+    }
+
+    private static void captureCacheUsage(ApiAdapter adapter, JsonObject root, Accumulator accumulator) {
+        JsonObject usage = object(root, "usage");
+        if (usage == null) usage = object(root, "usageMetadata");
+        if (usage == null) {
+            JsonObject response = object(root, "response");
+            if (response != null) {
+                usage = object(response, "usage");
+                if (usage == null) usage = object(response, "usageMetadata");
+            }
+        }
+        if (usage == null) return;
+        JsonObject details = object(usage, "prompt_tokens_details");
+        if (details == null) details = object(usage, "input_tokens_details");
+        if (details != null && details.has("cached_tokens") && !details.get("cached_tokens").isJsonNull()) {
+            long hit = details.get("cached_tokens").getAsLong();
+            accumulator.cacheUsage = new ApiAdapter.CacheUsage("prompt_tokens_details.cached_tokens", hit, number(usage, "prompt_tokens") - hit);
+            return;
+        }
+        if (usage.has("prompt_cache_hit_tokens") && !usage.get("prompt_cache_hit_tokens").isJsonNull()) {
+            accumulator.cacheUsage = new ApiAdapter.CacheUsage("prompt_cache_hit_tokens", usage.get("prompt_cache_hit_tokens").getAsLong(), number(usage, "prompt_cache_miss_tokens"));
+            return;
+        }
+        if (usage.has("cache_read_input_tokens") && !usage.get("cache_read_input_tokens").isJsonNull()) {
+            accumulator.cacheUsage = new ApiAdapter.CacheUsage("cache_read_input_tokens", usage.get("cache_read_input_tokens").getAsLong(), number(usage, "cache_creation_input_tokens"));
+            return;
+        }
+        if (usage.has("cachedContentTokenCount") && !usage.get("cachedContentTokenCount").isJsonNull()) {
+            long hit = usage.get("cachedContentTokenCount").getAsLong();
+            accumulator.cacheUsage = new ApiAdapter.CacheUsage("cachedContentTokenCount", hit, number(usage, "promptTokenCount") - hit);
         }
     }
 
@@ -322,6 +321,11 @@ public final class AiStreamClient {
         return element != null && element.isJsonObject() ? element.getAsJsonObject() : null;
     }
 
+    private static long number(JsonObject root, String key) {
+        JsonElement value = root.get(key);
+        return value != null && value.isJsonPrimitive() ? value.getAsLong() : 0;
+    }
+
     private static JsonArray array(JsonObject root, String key) {
         JsonElement element = root.get(key);
         return element != null && element.isJsonArray() ? element.getAsJsonArray() : null;
@@ -335,6 +339,7 @@ public final class AiStreamClient {
         private final StringBuilder reasoning = new StringBuilder();
         private final StringBuilder content = new StringBuilder();
         private final Consumer<Delta> listener;
+        private ApiAdapter.CacheUsage cacheUsage;
         private boolean completed;
 
         private Accumulator(Consumer<Delta> listener) { this.listener = listener; }

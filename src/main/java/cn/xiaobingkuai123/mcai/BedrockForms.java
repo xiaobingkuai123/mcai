@@ -4,6 +4,15 @@ import org.geysermc.cumulus.form.SimpleForm;
 import org.geysermc.cumulus.form.CustomForm;
 
 public class BedrockForms {
+    public static void openNextRoundForm(McAI plugin, Player player) {
+        LanguageManager lang = plugin.languageManager;
+        SimpleForm form = SimpleForm.builder().title(lang.get("round-limit-title")).content(lang.get("round-limit-content"))
+                .button(lang.get("round-limit-next")).button(lang.get("round-limit-cancel"))
+                .validResultHandler(r -> plugin.schedulerAdapter.runTask(player, () -> { if (!player.isOnline()) return; if (r.clickedButtonId() == 0) { plugin.clearPlayerHistory(player.getUniqueId()); player.sendMessage(lang.get("round-limit-started")); } }))
+                .closedResultHandler(() -> {}).build();
+        plugin.getFloodgateApi().sendForm(player.getUniqueId(), form);
+    }
+
     private static void handleFormClosed(McAI plugin, Player player) {
         plugin.waitingInputType.remove(player.getUniqueId());
         plugin.selectedChatMode.remove(player.getUniqueId());
@@ -71,7 +80,7 @@ public class BedrockForms {
                     int id = response.clickedButtonId();
                     if (id == 0) {
                         plugin.soundManager.playHistoryCleared(player);
-                        plugin.conversationHistory.remove(player.getUniqueId());
+                        plugin.clearPlayerHistory(player.getUniqueId());
                         player.sendMessage(plugin.languageManager.get("history-cleared"));
                     } else if (id == 2) {
                         openMainMenu(plugin, player);

@@ -20,7 +20,14 @@ public class PlayerQuitListener implements Listener {
         // worker 后续用 token 判断归属，不会误删重连后的新请求。
         plugin.activePlayerRequests.remove(playerId);
 
-        plugin.conversationHistory.remove(playerId);
+        if (plugin.historyPersistenceEnabled) {
+            ConversationHistory memory = plugin.conversationMemories.get(playerId);
+            if (memory != null) {
+                var snapshot = memory.persistedMessages();
+                plugin.schedulerAdapter.runAsync(() -> { try { plugin.historyPersistence.saveMessages(playerId, snapshot); } catch (Exception ignored) {} });
+            }
+        }
+        plugin.conversationMemories.remove(playerId);
         plugin.lastRequestTime.remove(playerId);
         plugin.requestCountPerMinute.remove(playerId);
         plugin.waitingInputType.remove(playerId);

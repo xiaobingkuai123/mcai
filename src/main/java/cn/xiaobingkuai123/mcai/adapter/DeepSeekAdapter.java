@@ -8,47 +8,16 @@ import java.util.List;
 public class DeepSeekAdapter implements ApiAdapter {
     private final int timeoutSeconds;
     public DeepSeekAdapter(int timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; }
-
-    @Override
-    public HttpRequest buildRequest(String baseUrl, String apiKey, String model, int maxTokens,
-                                    List<Message> messages, boolean isThinking) throws Exception {
-        JsonArray messagesArray = new JsonArray();
-        for (Message msg : messages) {
-            JsonObject obj = new JsonObject();
-            obj.addProperty("role", msg.role());
-            obj.addProperty("content", msg.content());
-            messagesArray.add(obj);
-        }
-        JsonObject body = new JsonObject();
-        body.addProperty("model", model);
-        body.add("messages", messagesArray);
-        body.addProperty("max_tokens", maxTokens);
-        body.addProperty("stream", false);
-        if (isThinking) {
-            JsonObject thinkingConfig = new JsonObject();
-            thinkingConfig.addProperty("type", "enabled");
-            body.add("thinking", thinkingConfig);
-        } else {
-            body.addProperty("temperature", 0.7);
-        }
-        return HttpRequest.newBuilder()
-                .uri(URI.create(ApiUrls.v1(baseUrl, "/chat/completions")))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .timeout(Duration.ofSeconds(timeoutSeconds))
-                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                .build();
+    @Override public HttpRequest buildRequest(String baseUrl, String key, String model, int max, List<Message> messages, boolean thinking) throws Exception { return buildRequest(baseUrl, key, model, messages, new ApiRequestOptions(.7, 1, max, timeoutSeconds, 0, false, thinking, 4096, "medium")); }
+    @Override public HttpRequest buildRequest(String baseUrl, String key, String model, List<Message> messages, ApiRequestOptions o) {
+        JsonArray a = new JsonArray(); for (Message m : messages) { JsonObject x = new JsonObject(); x.addProperty("role", m.role()); x.addProperty("content", m.content()); a.add(x); }
+        JsonObject b = new JsonObject(); b.addProperty("model", model); b.add("messages", a); b.addProperty("max_tokens", o.maxTokens()); b.addProperty("stream", o.streaming());
+        JsonObject thinking = new JsonObject();
+        thinking.addProperty("type", o.thinkingEnabled() ? "enabled" : "disabled");
+        b.add("thinking", thinking);
+        if (!o.thinkingEnabled()) { b.addProperty("temperature", o.temperature()); b.addProperty("top_p", o.topP()); }
+        if (o.streaming()) { JsonObject usage = new JsonObject(); usage.addProperty("include_usage", true); b.add("stream_options", usage); }
+        return HttpRequest.newBuilder().uri(URI.create(ApiUrls.v1(baseUrl, "/chat/completions"))).header("Content-Type", "application/json").header("Authorization", "Bearer " + key).timeout(Duration.ofSeconds(o.timeoutSeconds())).POST(HttpRequest.BodyPublishers.ofString(b.toString())).build();
     }
-
-    @Override
-    public AdapterResponse parseResponse(String responseBody) throws Exception {
-        JsonObject root = new JsonParser().parse(responseBody).getAsJsonObject();
-        JsonObject message = root.getAsJsonArray("choices").get(0).getAsJsonObject()
-                .getAsJsonObject("message");
-        String content = message.has("content") && !message.get("content").isJsonNull()
-                ? message.get("content").getAsString() : "";
-        String reasoning = message.has("reasoning_content") && !message.get("reasoning_content").isJsonNull()
-                ? message.get("reasoning_content").getAsString() : null;
-        return new AdapterResponse(content, reasoning);
-    }
+    @Override public AdapterResponse parseResponse(String text) { JsonObject m = new JsonParser().parse(text).getAsJsonObject().getAsJsonArray("choices").get(0).getAsJsonObject().getAsJsonObject("message"); String c=m.has("content")&&!m.get("content").isJsonNull()?m.get("content").getAsString():""; String r=m.has("reasoning_content")&&!m.get("reasoning_content").isJsonNull()?m.get("reasoning_content").getAsString():null; return new AdapterResponse(c,r); }
 }

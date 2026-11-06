@@ -18,7 +18,7 @@ public class GUIListener implements Listener {
         Inventory top = event.getView().getTopInventory();
         InventoryHolder holder = top.getHolder();
         if (!(holder instanceof MainMenuHolder || holder instanceof ModeMenuHolder
-                || holder instanceof ClearConfirmHolder)) return;
+                || holder instanceof ClearConfirmHolder || holder instanceof RoundLimitHolder)) return;
 
         event.setCancelled(true);
         if (event.getRawSlot() < 0 || event.getRawSlot() >= top.getSize()) return;
@@ -33,8 +33,10 @@ public class GUIListener implements Listener {
                 handleMainMenuClick(type, player);
             } else if (holder instanceof ModeMenuHolder) {
                 handleModeMenuClick(type, player);
-            } else {
+            } else if (holder instanceof ClearConfirmHolder) {
                 handleClearConfirmClick(type, player);
+            } else {
+                handleRoundLimitClick(type, player);
             }
         });
     }
@@ -44,7 +46,7 @@ public class GUIListener implements Listener {
         Inventory top = event.getView().getTopInventory();
         InventoryHolder holder = top.getHolder();
         if (!(holder instanceof MainMenuHolder || holder instanceof ModeMenuHolder
-                || holder instanceof ClearConfirmHolder)) return;
+                || holder instanceof ClearConfirmHolder || holder instanceof RoundLimitHolder)) return;
         java.util.Set<Integer> rawSlots = event.getRawSlots();
         for (Integer slot : rawSlots) {
             if (slot < top.getSize()) {
@@ -98,10 +100,15 @@ public class GUIListener implements Listener {
         }
     }
 
+    private void handleRoundLimitClick(Material type, Player player) {
+        if (type == Material.GREEN_WOOL) { plugin.clearPlayerHistory(player.getUniqueId()); player.closeInventory(); player.sendMessage(plugin.languageManager.get("round-limit-started")); }
+        else if (type == Material.RED_WOOL) player.closeInventory();
+    }
+
     private void handleClearConfirmClick(Material type, Player player) {
         if (type == Material.GREEN_WOOL) {
             plugin.soundManager.playHistoryCleared(player);
-            plugin.conversationHistory.remove(player.getUniqueId());
+            plugin.clearPlayerHistory(player.getUniqueId());
             player.sendMessage(plugin.languageManager.get("history-cleared"));
             player.closeInventory();
         } else if (type == Material.RED_WOOL) {
