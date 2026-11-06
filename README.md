@@ -160,7 +160,7 @@ permissions:
       max-history: 20
 ```
 
-`default` is the fallback group. Permission groups are evaluated in file order and the last matching group wins. A group with `max-points: -1` has unlimited daily points; `max-question-length: 0` disables the question-length limit. `max-history` sets the maximum rounds retained for that group in both history modes. In `sliding` mode, older rounds are discarded when the limit is reached. In `accumulate` mode, reaching the limit blocks further requests even if the prompt GUI is closed; clear the conversation with `/ai clear` to start a new one. The `(current/limit)` suffix shown after each accumulate-mode answer is display-only and is not sent back to the AI or stored in history.
+`default` is the fallback group. Permission groups are evaluated in file order and the last matching group wins. A group with `max-points: -1` has unlimited daily points; `max-question-length: 0` disables the question-length limit. `max-history` sets the maximum rounds retained for that group in both history modes. In `sliding` mode, older rounds are discarded when the limit is reached. In `accumulate` mode, reaching the limit blocks further requests and prompts the player to start a new conversation. Confirming clears the history; closing or cancelling the prompt does not bypass the limit. The `(current/limit)` suffix shown after each accumulate-mode answer is display-only and is not sent back to the AI or stored in history.
 
 ## Build
 
