@@ -21,7 +21,6 @@ api:
     key: "sk-xxx"
     base-url: "https://api.deepseek.com"
     api-type: "chat"
-    # These are LinkAPI model IDs. Change them if using another endpoint.
     normal-model: "deepseek-v4.1-flash"
     normal-think-model: "deepseek-v4-pro"
     pro-model: "deepseek-v4.1-flash"
