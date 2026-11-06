@@ -32,7 +32,11 @@ public class ChatManager {
         boolean streaming = plugin.apiStreaming && plugin.getConfig().getBoolean("chat.streaming.enabled", true);
         boolean isThinking = mode.endsWith("_think");
 
-        final int maxHist = Math.max(0, plugin.getEffectiveMaxHistory(player));
+        if (!economyManager.canStartConversationRound(player)) {
+            plugin.activePlayerRequests.remove(playerId, requestToken);
+            return;
+        }
+        final int maxHist = economyManager.getConversationRoundLimit(player);
         final int modeCost = economyManager.getCostForMode(mode);
         final int baseModeCost = economyManager.getCostForMode(mode.replace("_think", ""));
         final int thinkingPremium = Math.max(0, modeCost - baseModeCost);
@@ -100,6 +104,12 @@ public class ChatManager {
                 }
                 completedRound.add(new ApiAdapter.Message("assistant", answer));
                 memory.addRound(completedRound);
+                String displayAnswer = answer;
+                if (plugin.historyMode == ConversationHistory.Mode.ACCUMULATE) {
+                    int roundLimit = economyManager.getConversationRoundLimit(player);
+                    int roundCount = Math.min(roundLimit, memory.roundCount());
+                    displayAnswer += " (" + roundCount + "/" + roundLimit + ")";
+                }
                 if (plugin.historyPersistenceEnabled) {
                     try { plugin.historyPersistence.save(playerId, memory); }
                     catch (Exception e) { plugin.getLogger().warning("Unable to save conversation history"); }
@@ -114,10 +124,10 @@ public class ChatManager {
                 }
 
                 if (output != null) {
-                    output.finish(answer, reasoning);
+                    output.finish(displayAnswer, reasoning);
                 } else {
                     final String finalReasoning = reasoning;
-                    final String finalAnswer = answer;
+                    final String finalAnswer = displayAnswer;
                     plugin.schedulerAdapter.runTask(player, () -> {
                         if (!player.isOnline()) return;
                         if (isThinking && finalReasoning != null && !finalReasoning.isBlank()) {
@@ -287,7 +297,7 @@ public class ChatManager {
         return "anthropic".equalsIgnoreCase(provider);
     }
 
-    private ConversationHistory conversationMemory(UUID userId, int maxRounds) {
+    ConversationHistory conversationMemory(UUID userId, int maxRounds) {
         return plugin.conversationMemories.computeIfAbsent(userId, id -> {
             if (plugin.historyPersistenceEnabled && plugin.historyPersistence != null) {
                 return plugin.historyPersistence.load(id, plugin.historyMode, Math.max(0, maxRounds));

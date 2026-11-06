@@ -86,8 +86,9 @@ The complete default configuration is in [`src/main/resources/config.yml`](src/m
 | `api.request.reasoning-effort` | Reasoning effort sent where supported; default `medium`. |
 | `api.timeout-seconds` | HTTP request timeout; default `120`. |
 | `chat.system-prompt`, `chat.max-history`, `chat.admin-max-history` | Prompt and history limits. |
-| `chat.history.*`, `chat.streaming.*` | History mode/persistence and stream/BossBar settings. |
-| `points.*`, `rate-limit.*`, `daily-limit.*` | Point costs, request limits, daily quotas, and question limits. |
+| `chat.history.*`, `chat.streaming.*` | History mode/persistence and stream/BossBar settings. In `accumulate` mode, the round limit comes from the matching permission group. |
+| `points.*`, `rate-limit.*`, `daily-limit.*` | Point costs, request limits, and the daily-limit toggle. |
+| `permissions.groups.*` | Unified permission groups for daily points, question length, and accumulate conversation-round limits. |
 | `sounds.*` | Sound feedback options. |
 
 Token values are passed to the selected adapter. The plugin applies a minimum of 1 to output-token settings and 1024 to the shared reasoning budget; it does not impose a maximum. Provider/model limits and request-shape constraints still apply, so configure values accepted by the endpoint you use.
@@ -138,7 +139,28 @@ Console commands include `ai help`, `ai chat <message>`, `ai chat think <message
 
 Each mode's point cost is set by `points.normal-cost`, `points.normal-think-cost`, `points.pro-cost`, and `points.pro-think-cost`. If Vault and an economy plugin are available, players may purchase points with `/ai buy [amount]`. Administrators can use `/ai give <player> <amount>` and `/ai take <player> <amount>`.
 
-Per-minute limits, daily point quotas, maximum question length, and daily purchase limits are configured under `rate-limit`, `daily-limit`, and `points`. A group with `max-points: -1` has unlimited daily points.
+Per-minute limits and daily purchase limits are configured under `rate-limit` and `points`. The `daily-limit.enabled` toggle controls point-quota enforcement. Permission-specific quotas, question lengths, and conversation round limits are grouped under `permissions.groups`:
+
+```yaml
+permissions:
+  groups:
+    default:
+      max-points: 10
+      max-question-length: 200
+      max-conversation-rounds: 5
+    vip:
+      permission: "mcai.group.vip"
+      max-points: 50
+      max-question-length: 500
+      max-conversation-rounds: 10
+    admin:
+      permission: "mcai.group.admin"
+      max-points: -1
+      max-question-length: 0
+      max-conversation-rounds: 20
+```
+
+`default` is the fallback group. Permission groups are evaluated in file order and the last matching group wins. A group with `max-points: -1` has unlimited daily points; `max-question-length: 0` disables the question-length limit. In `accumulate` history mode, `max-conversation-rounds` applies to the current conversation. Reaching the limit blocks further requests even if the prompt GUI is closed; clear the conversation with `/ai clear` to start a new one. The `(current/limit)` suffix shown after each answer is display-only and is not sent back to the AI or stored in history.
 
 ## Build
 

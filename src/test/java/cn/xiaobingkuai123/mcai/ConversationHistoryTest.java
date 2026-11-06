@@ -14,6 +14,22 @@ class ConversationHistoryTest {
         assertEquals(List.of("u4", "a4", "u5", "a5"), h.promptMessages().stream().map(ApiAdapter.Message::content).toList());
     }
     @Test void accumulateStopsAfterCapButKeepsExisting() { var h = new ConversationHistory(ConversationHistory.Mode.ACCUMULATE, 1); h.addRound(round("1")); h.addRound(round("2")); assertTrue(h.capped()); assertEquals(List.of("u1","a1"), h.promptMessages().stream().map(ApiAdapter.Message::content).toList()); }
+    @Test void accumulateRejectsAnotherRoundAfterLimitAndCanReset() {
+        var h = new ConversationHistory(ConversationHistory.Mode.ACCUMULATE, 1);
+        assertTrue(h.canAddRound());
+        h.addRound(round("1"));
+        assertFalse(h.canAddRound());
+        assertEquals(1, h.roundCount());
+        h.reset();
+        assertTrue(h.canAddRound());
+    }
+    @Test void displayOnlyRoundSuffixIsNotStoredInHistory() {
+        var h = new ConversationHistory(ConversationHistory.Mode.ACCUMULATE, 3);
+        h.addRound(List.of(new ApiAdapter.Message("user", "question"),
+                new ApiAdapter.Message("assistant", "answer")));
+        assertEquals("answer", h.promptMessages().get(1).content());
+        assertFalse(h.promptMessages().get(1).content().contains("(1/3)"));
+    }
     @Test void incompleteRoundRejected() { var h = new ConversationHistory(ConversationHistory.Mode.SLIDING, 2); assertThrows(IllegalArgumentException.class, () -> h.addRound(List.of(new ApiAdapter.Message("user", "u")))); }
     @Test void anthropicThinkingBlockDoesNotEndRoundEarly() {
         var h = ConversationHistory.fromMessages(ConversationHistory.Mode.SLIDING, 2, List.of(

@@ -88,12 +88,17 @@ public class EconomyManager {
 
     static final class GroupConfig {
         final String name;
+        final String permission;
         final int maxPoints;
         final int maxQuestionLength;
-        GroupConfig(String name, int maxPoints, int maxQuestionLength) {
+        final int maxConversationRounds;
+        GroupConfig(String name, String permission, int maxPoints, int maxQuestionLength,
+                    int maxConversationRounds) {
             this.name = name;
+            this.permission = permission;
             this.maxPoints = maxPoints;
             this.maxQuestionLength = maxQuestionLength;
+            this.maxConversationRounds = maxConversationRounds;
         }
     }
 
@@ -174,19 +179,55 @@ public class EconomyManager {
     }
 
     public GroupConfig getGroupConfig(Player player) {
-        ConfigurationSection groupsSection = plugin.getConfig().getConfigurationSection("daily-limit.groups");
-        if (groupsSection == null) return new GroupConfig("default", 10, 200);
-        for (String groupName : new String[]{"admin", "vip"}) {
-            ConfigurationSection section = groupsSection.getConfigurationSection(groupName);
-            if (section != null && player.hasPermission(section.getString("permission", "mcai.group." + groupName))) {
-                return new GroupConfig(groupName, section.getInt("max-points", 10), section.getInt("max-question-length", 200));
-            }
+        ConfigurationSection groupsSection = plugin.getConfig().getConfigurationSection("permissions.groups");
+        if (groupsSection == null) {
+            groupsSection = plugin.getConfig().getConfigurationSection("daily-limit.groups");
         }
+        if (groupsSection == null) return defaultGroup();
+
         ConfigurationSection defaultSection = groupsSection.getConfigurationSection("default");
-        if (defaultSection != null) {
-            return new GroupConfig("default", defaultSection.getInt("max-points", 10), defaultSection.getInt("max-question-length", 200));
+        GroupConfig fallback = defaultSection == null ? defaultGroup()
+                : groupConfig("default", defaultSection);
+        for (String groupName : groupsSection.getKeys(false)) {
+            if ("default".equalsIgnoreCase(groupName)) continue;
+            ConfigurationSection section = groupsSection.getConfigurationSection(groupName);
+            if (section == null) continue;
+            String permission = section.getString("permission", "mcai.group." + groupName);
+            if (player.hasPermission(permission)) fallback = groupConfig(groupName, section);
         }
-        return new GroupConfig("fallback", 3, 80);
+        return fallback;
+    }
+
+    private GroupConfig groupConfig(String name, ConfigurationSection section) {
+        return new GroupConfig(name,
+                section.getString("permission", ""),
+                section.getInt("max-points", 10),
+                section.getInt("max-question-length", 200),
+                Math.max(0, section.getInt("max-conversation-rounds", plugin.historyMaxRounds)));
+    }
+
+    private GroupConfig defaultGroup() {
+        return new GroupConfig("default", "", 10, 200, Math.max(0, plugin.historyMaxRounds));
+    }
+
+    public int getConversationRoundLimit(Player player) {
+        return plugin.historyMode == ConversationHistory.Mode.ACCUMULATE
+                ? getGroupConfig(player).maxConversationRounds : plugin.getEffectiveMaxHistory(player);
+    }
+
+    public int getConversationRoundCount(Player player) {
+        int limit = getConversationRoundLimit(player);
+        return plugin.chatManager.conversationMemory(player.getUniqueId(), limit).roundCount();
+    }
+
+    public boolean canStartConversationRound(Player player) {
+        if (plugin.historyMode != ConversationHistory.Mode.ACCUMULATE) return true;
+        int limit = getConversationRoundLimit(player);
+        ConversationHistory history = plugin.chatManager.conversationMemory(player.getUniqueId(), limit);
+        if (limit > 0 && history.canAddRound()) return true;
+        player.sendMessage(plugin.languageManager.get("round-limit-reached", "limit", String.valueOf(limit)));
+        plugin.openNextRoundPrompt(player);
+        return false;
     }
 
     public int getRemainingPoints(Player player) {
@@ -220,6 +261,7 @@ public class EconomyManager {
             player.sendMessage(plugin.languageManager.get("question-too-long", "limit", String.valueOf(groupConfig.maxQuestionLength)));
             return false;
         }
+        if (!canStartConversationRound(player)) return false;
         if (!checkRateLimit(player)) {
             player.sendMessage(plugin.languageManager.get("rate-limited", "limit", String.valueOf(plugin.ratePerMinute)));
             return false;

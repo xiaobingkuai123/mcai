@@ -31,6 +31,10 @@ public final class ConversationHistory {
     public synchronized List<Round> rounds() { return List.copyOf(rounds); }
     public synchronized int roundCount() { return rounds.size(); }
     public synchronized boolean capped() { return capped; }
+    public synchronized boolean canAddRound() {
+        return mode != Mode.ACCUMULATE || (!capped && rounds.size() < maxRounds);
+    }
+    public synchronized int maxRounds() { return maxRounds; }
     public synchronized void markCapped() { capped = true; }
     public synchronized void reset() { rounds.clear(); capped = false; }
     public synchronized void addRound(List<ApiAdapter.Message> messages) {

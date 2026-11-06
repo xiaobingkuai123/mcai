@@ -6,6 +6,7 @@ round-limit-content: "The history limit was reached. Start a new conversation wi
 round-limit-next: "Start next window"
 round-limit-cancel: "Cancel"
 round-limit-started: "&aA new conversation window has started."
+round-limit-reached: "&cConversation limit reached ({limit} rounds). Clear history before continuing."
 rate-limited: "&cSlow down! ({limit}/min)"
 daily-limit-reached: "&cDaily points exhausted!"
 daily-limit-no-economy: "&cDaily points exhausted!"
