@@ -24,7 +24,7 @@ class AdapterRequestTest {
             public void onError(Throwable t) { result.completeExceptionally(t); }
             public void onComplete() { result.complete(out.toByteArray()); }
         });
-        return new JsonParser().parse(new String(result.get(), StandardCharsets.UTF_8)).getAsJsonObject();
+        return JsonParser.parseString(new String(result.get(), StandardCharsets.UTF_8)).getAsJsonObject();
     }
     @Test void stableOpenAiRequestRetainsOrderedRolesAndStreaming() throws Exception {
         var options = new ApiRequestOptions(.25, .8, 100, 30, 0, true, false, 2048, "low");

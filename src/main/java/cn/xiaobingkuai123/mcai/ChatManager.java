@@ -227,6 +227,21 @@ public class ChatManager {
     public void askConsole(String question, boolean isPro, boolean isThinking) {
         String mode = isPro ? (isThinking ? "pro_think" : "pro") : (isThinking ? "normal_think" : "normal");
         plugin.schedulerAdapter.runAsync(() -> {
+            ConversationHistory.Mode historyMode = plugin.historyMode;
+            ConversationHistory memory;
+            ConsoleRoundLimit.Reservation reservation;
+            synchronized (plugin.consoleRoundLimit) {
+                memory = conversationMemory(McAI.CONSOLE_UUID, plugin.consoleMaxHistory);
+                reservation = plugin.consoleRoundLimit.reserve(
+                        memory.roundCount(), plugin.consoleMaxHistory, historyMode);
+            }
+            if (reservation == null) {
+                plugin.getLogger().warning(plugin.languageManager.get(
+                        "console-round-limit-reached", "limit", String.valueOf(plugin.consoleMaxHistory)));
+                return;
+            }
+            boolean completed = false;
+            boolean reserved = reservation.counted();
             try {
                 ApiAdapter.AdapterResponse response = callApi(McAI.CONSOLE_UUID, question, mode, plugin.consoleMaxHistory, null, plugin::isEnabled);
                 String answer = response.content();
@@ -235,14 +250,17 @@ public class ChatManager {
                             + "] " + plugin.languageManager.get("console-name") + ": " + answer);
                     return;
                 }
-                ConversationHistory memory = conversationMemory(McAI.CONSOLE_UUID, plugin.consoleMaxHistory);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
                 if (isAnthropicMode(mode) && response.reasoning() != null && !response.reasoning().isBlank()) {
                     completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
                 }
                 completedRound.add(new ApiAdapter.Message("assistant", answer));
-                memory.addRound(completedRound);
+                synchronized (plugin.consoleRoundLimit) {
+                    if (!plugin.consoleRoundLimit.complete(reservation, memory, completedRound)) return;
+                    memory = conversationMemory(McAI.CONSOLE_UUID, plugin.consoleMaxHistory);
+                    completed = true;
+                }
                 if (plugin.historyPersistenceEnabled) {
                     try { plugin.historyPersistence.save(McAI.CONSOLE_UUID, memory); }
                     catch (Exception e) { plugin.getLogger().warning("Unable to save console conversation history"); }
@@ -257,6 +275,8 @@ public class ChatManager {
             } catch (Exception e) {
                 plugin.getLogger().warning(plugin.languageManager.get("log-api-console-error",
                         "error", e.getMessage()));
+            } finally {
+                plugin.consoleRoundLimit.finish(reservation, completed);
             }
         });
     }

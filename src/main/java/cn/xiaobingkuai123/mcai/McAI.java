@@ -73,6 +73,7 @@ public class McAI extends JavaPlugin {
     // 每个请求一个 token，防止旧 worker 的 finally 误删新请求的占位。
     final Map<UUID, Object> activePlayerRequests = new ConcurrentHashMap<>();
     final Map<UUID, PlayerStreamOutput> activeStreamOutputs = new ConcurrentHashMap<>();
+    final ConsoleRoundLimit consoleRoundLimit = new ConsoleRoundLimit();
 
     static final UUID CONSOLE_UUID = UUID.fromString("00000000-0000-0000-0000-000000000000");
 
@@ -229,9 +230,18 @@ public class McAI extends JavaPlugin {
     }
 
     void clearPlayerHistory(UUID id) {
-        ConversationHistory memory = conversationMemories.remove(id);
+        ConversationHistory memory;
+        if (CONSOLE_UUID.equals(id)) {
+            synchronized (consoleRoundLimit) {
+                consoleRoundLimit.clear();
+                memory = conversationMemories.remove(id);
+                if (memory != null) memory.reset();
+            }
+        } else {
+            memory = conversationMemories.remove(id);
+            if (memory != null) memory.reset();
+        }
         if (historyPersistenceEnabled && historyPersistence != null) historyPersistence.delete(id);
-        if (memory != null) memory.reset();
     }
 
     void openNextRoundPrompt(Player player) {

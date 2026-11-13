@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CacheUsageParserTest {
-    private JsonObject json(String text) { return new JsonParser().parse(text).getAsJsonObject(); }
+    private JsonObject json(String text) { return JsonParser.parseString(text).getAsJsonObject(); }
 
     @Test void providerFieldsHaveTheSameMeaningInResponsesAndStreamEnvelopes() {
         String[] payloads = {

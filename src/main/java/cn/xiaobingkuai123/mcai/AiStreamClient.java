@@ -185,7 +185,7 @@ public final class AiStreamClient {
         if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return;
         JsonElement parsed;
         try {
-            parsed = new JsonParser().parse(trimmed);
+            parsed = JsonParser.parseString(trimmed);
         } catch (JsonParseException e) {
             throw new ProtocolException("Provider returned invalid stream JSON", e);
         }

@@ -45,7 +45,7 @@ public final class GeminiCachedContentManager {
                     .timeout(Duration.ofSeconds(timeoutSeconds)).POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) return null;
-            JsonObject result = new JsonParser().parse(response.body()).getAsJsonObject();
+            JsonObject result = JsonParser.parseString(response.body()).getAsJsonObject();
             String resource = result.has("name") ? result.get("name").getAsString() : null;
             if (resource != null && !resource.isBlank()) { entries.put(key, new Entry(hash, resource)); return resource; }
         } catch (Exception ignored) { }

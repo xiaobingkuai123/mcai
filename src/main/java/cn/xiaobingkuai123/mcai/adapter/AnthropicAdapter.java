@@ -78,7 +78,7 @@ public class AnthropicAdapter implements ApiAdapter {
         JsonObject block = new JsonObject(); block.addProperty("type", "text"); block.addProperty("text", message.content()); return block;
     }
     @Override public AdapterResponse parseResponse(String text) {
-        JsonArray blocks = new JsonParser().parse(text).getAsJsonObject().getAsJsonArray("content");
+        JsonArray blocks = JsonParser.parseString(text).getAsJsonObject().getAsJsonArray("content");
         StringBuilder content = new StringBuilder(), reasoning = new StringBuilder(); String signature = null;
         for (JsonElement element : blocks) {
             JsonObject block = element.getAsJsonObject(); String type = block.get("type").getAsString();

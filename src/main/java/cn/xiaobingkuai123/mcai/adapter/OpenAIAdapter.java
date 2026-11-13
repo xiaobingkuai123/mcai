@@ -22,7 +22,7 @@ public class OpenAIAdapter implements ApiAdapter {
         return HttpRequest.newBuilder().uri(URI.create(ApiUrls.v1(baseUrl, "/chat/completions"))).header("Content-Type", "application/json").header("Authorization", "Bearer " + key).timeout(Duration.ofSeconds(o.timeoutSeconds())).POST(HttpRequest.BodyPublishers.ofString(b.toString())).build();
     }
     @Override public AdapterResponse parseResponse(String text) {
-        JsonObject m = new JsonParser().parse(text).getAsJsonObject().getAsJsonArray("choices").get(0).getAsJsonObject().getAsJsonObject("message");
+        JsonObject m = JsonParser.parseString(text).getAsJsonObject().getAsJsonArray("choices").get(0).getAsJsonObject().getAsJsonObject("message");
         String c = m.has("content") && !m.get("content").isJsonNull() ? m.get("content").getAsString() : "";
         String r = m.has("reasoning_content") && !m.get("reasoning_content").isJsonNull() ? m.get("reasoning_content").getAsString() : null; return new AdapterResponse(c, r);
     }
