@@ -289,7 +289,7 @@ public class EconomyManager {
 
     private boolean checkRateLimit(Player player) {
         if (!plugin.rateLimitEnabled) return true;
-        return plugin.rateLimiter.acquire(player.getUniqueId(), plugin.ratePerMinute, System.currentTimeMillis());
+        return plugin.rateLimiter.acquire(player.getUniqueId(), plugin.ratePerMinute);
     }
 
     private boolean checkDailyLimit(Player player, String mode) {
@@ -431,10 +431,11 @@ public class EconomyManager {
             return;
         }
         plugin.schedulerAdapter.runTask(target, () -> {
+            final String targetName = target.getName();
             if (!target.isOnline()) {
                 plugin.schedulerAdapter.runTask(sender, () ->
                         sender.sendMessage(plugin.languageManager.get(
-                                "player-not-found", "player", target.getName())));
+                                "player-not-found", "player", targetName)));
                 return;
             }
             DailyUsageRecord record = dailyUsageRecords.computeIfAbsent(
@@ -458,7 +459,7 @@ public class EconomyManager {
             if (give) plugin.soundManager.playBuySuccess(target);
             plugin.schedulerAdapter.runTask(sender, () ->
                     sender.sendMessage(plugin.languageManager.get(prefix + "-success",
-                            "player", target.getName(), "amount", String.valueOf(actual))));
+                            "player", targetName, "amount", String.valueOf(actual))));
         });
     }
 }

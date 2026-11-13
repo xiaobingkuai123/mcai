@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RequestRateLimiterTest {
     @Test void concurrentRequestsRespectPerPlayerLimitAndCleanupResetsIt() throws Exception {
-        var limiter = new RequestRateLimiter();
+        try (var limiter = new RequestRateLimiter()) {
         UUID id = UUID.randomUUID();
         try (var executor = Executors.newFixedThreadPool(8)) {
             var tasks = IntStream.range(0, 100).<Callable<Boolean>>mapToObj(i -> () -> limiter.acquire(id, 10, 1000)).toList();
@@ -21,5 +21,6 @@ class RequestRateLimiterTest {
         limiter.remove(id);
         assertTrue(limiter.acquire(id, 1, 61_001));
         assertFalse(limiter.acquire(id, 1, 61_001));
+        }
     }
 }

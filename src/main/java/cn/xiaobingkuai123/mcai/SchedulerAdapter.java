@@ -6,6 +6,7 @@ public interface SchedulerAdapter {
     void runTaskLater(CommandSender sender, Runnable task, long delayTicks);
     void runAsync(Runnable task);
 
+    /** Runs on the player's entity scheduler (Paper: server thread). Retirement callback must not access Player APIs. */
     default void runTask(CommandSender sender, Runnable task, Runnable retired) {
         runTask(sender, task);
     }

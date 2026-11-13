@@ -22,7 +22,14 @@ public class ChatManager {
     }
 
     public void askPlayer(Player player, String question, String mode) {
+        plugin.schedulerAdapter.runTask(player, () -> {
+            if (player.isOnline()) askPlayerOnEntity(player, question, mode);
+        });
+    }
+
+    private void askPlayerOnEntity(Player player, String question, String mode) {
         UUID playerId = player.getUniqueId();
+        final String playerName = player.getName();
         final Object requestToken = new Object();
 
         if (plugin.activePlayerRequests.putIfAbsent(playerId, requestToken) != null) {
@@ -64,7 +71,7 @@ public class ChatManager {
 
         if (plugin.logToConsole) {
             plugin.getLogger().info("[" + plugin.languageManager.get("log-request-prefix") + "] "
-                    + player.getName() + " [" + mode + "]: " + question);
+                    + playerName + " [" + mode + "]: " + redactLog(question));
         }
 
         final int modeCostFinal = modeCost;
@@ -101,14 +108,18 @@ public class ChatManager {
                 ConversationHistory memory = conversationMemory(playerId, maxHist);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
-                if (isAnthropicMode(mode) && response.reasoning() != null && !response.reasoning().isBlank()) {
-                    completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
+                if (isAnthropicMode(mode) && !response.contentBlocks().isEmpty()) {
+                    completedRound.addAll(response.contentBlocks());
+                } else {
+                    if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
+                        completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
+                    }
+                    completedRound.add(new ApiAdapter.Message("assistant", answer));
                 }
-                completedRound.add(new ApiAdapter.Message("assistant", answer));
                 memory.addRound(completedRound);
                 String displayAnswer = answer;
                 if (plugin.historyMode == ConversationHistory.Mode.ACCUMULATE) {
-                    int roundLimit = economyManager.getConversationRoundLimit(player);
+                    int roundLimit = maxHist;
                     int roundCount = Math.min(roundLimit, memory.roundCount());
                     displayAnswer += " (" + roundCount + "/" + roundLimit + ")";
                 }
@@ -121,8 +132,8 @@ public class ChatManager {
                     String displayText = (reasoning != null && !reasoning.isBlank())
                             ? reasoning + "\n" + answer : answer;
                     plugin.getLogger().info("[" + plugin.languageManager.get("log-response-prefix")
-                            + "] -> " + player.getName() + ": "
-                            + ChatColor.stripColor(displayText));
+                            + "] -> " + playerName + ": "
+                            + redactLog(ChatColor.stripColor(displayText)));
                 }
 
                 if (output != null) {
@@ -159,7 +170,7 @@ public class ChatManager {
 
                 if (!(e instanceof CancellationException)) {
                     plugin.getLogger().warning(plugin.languageManager.get(
-                            "log-api-request-exception", "error", String.valueOf(e.getMessage())));
+                            "log-api-request-exception", "error", e.getClass().getSimpleName()));
                     String message = playerErrorMessage(e, streaming);
                     if (output != null) {
                         output.fail(message);
@@ -200,7 +211,22 @@ public class ChatManager {
         }
     }
 
-    private void logCacheUsage(ApiAdapter.CacheUsage usage) {
+    String redactLog(String text) {
+        if (text == null) return "";
+        String safe = text;
+        for (String provider : List.of("deepseek", "openai", "anthropic", "gemini")) {
+            String key = plugin.getConfig().getString("api." + provider + ".key", "");
+            if (key != null && !key.isBlank()) safe = safe.replace(key, "[REDACTED]");
+        }
+        return redactCredentials(safe);
+    }
+
+    static String redactCredentials(String text) {
+        String quoted = text.replaceAll("(?i)(authorization|api[-_ ]?key|access[-_]?token|token)(\\\"\\s*:\\s*\\\")([^\\\"]*)(\\\")", "$1$2[REDACTED]$4");
+        return quoted.replaceAll("(?i)(authorization|api[-_ ]?key|access[-_]?token|token)\\s*[:=]\\s*(?:bearer\\s+)?[^\\s,;\\\"]+", "$1=[REDACTED]")
+                .replaceAll("(?i)bearer\\s+[^\\s,;\\\"]+", "Bearer [REDACTED]")
+                .replaceAll("sk-(?:ant-)?[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]+", "[REDACTED]");
+    }    private void logCacheUsage(ApiAdapter.CacheUsage usage) {
         if (usage == null) {
             plugin.getLogger().info("AI prompt cache: not-reported (field=none)");
             return;
@@ -246,16 +272,19 @@ public class ChatManager {
                 ApiAdapter.AdapterResponse response = callApi(McAI.CONSOLE_UUID, question, mode, plugin.consoleMaxHistory, null, plugin::isEnabled);
                 String answer = response.content();
                 if (answer == null || answer.isBlank()) {
-                    plugin.getLogger().warning("[" + plugin.languageManager.get("log-console-answer-prefix")
-                            + "] " + plugin.languageManager.get("console-name") + ": " + answer);
+                    plugin.getLogger().warning("AI returned an empty answer");
                     return;
                 }
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
-                if (isAnthropicMode(mode) && response.reasoning() != null && !response.reasoning().isBlank()) {
-                    completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
+                if (isAnthropicMode(mode) && !response.contentBlocks().isEmpty()) {
+                    completedRound.addAll(response.contentBlocks());
+                } else {
+                    if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
+                        completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
+                    }
+                    completedRound.add(new ApiAdapter.Message("assistant", answer));
                 }
-                completedRound.add(new ApiAdapter.Message("assistant", answer));
                 synchronized (plugin.consoleRoundLimit) {
                     if (!plugin.consoleRoundLimit.complete(reservation, memory, completedRound)) return;
                     memory = conversationMemory(McAI.CONSOLE_UUID, plugin.consoleMaxHistory);
@@ -265,16 +294,16 @@ public class ChatManager {
                     try { plugin.historyPersistence.save(McAI.CONSOLE_UUID, memory); }
                     catch (Exception e) { plugin.getLogger().warning("Unable to save console conversation history"); }
                 }
-                if (response.reasoning() != null && !response.reasoning().isEmpty() && isThinking) {
+                if (plugin.logToConsole && response.reasoning() != null && !response.reasoning().isEmpty() && isThinking) {
                     plugin.getLogger().info("[" + plugin.languageManager.get("log-console-reasoning")
-                            + "] \n" + ChatColor.stripColor(response.reasoning()));
+                            + "] \n" + redactLog(ChatColor.stripColor(response.reasoning())));
                 }
-                plugin.getLogger().info("[" + plugin.languageManager.get("log-console-answer-prefix")
+                if (plugin.logToConsole) plugin.getLogger().info("[" + plugin.languageManager.get("log-console-answer-prefix")
                         + "] -> " + plugin.languageManager.get("console-name") + ": "
-                        + ChatColor.stripColor(answer));
+                        + redactLog(ChatColor.stripColor(answer)));
             } catch (Exception e) {
                 plugin.getLogger().warning(plugin.languageManager.get("log-api-console-error",
-                        "error", e.getMessage()));
+                        "error", e.getClass().getSimpleName()));
             } finally {
                 plugin.consoleRoundLimit.finish(reservation, completed);
             }
@@ -348,13 +377,24 @@ public class ChatManager {
                 plugin.apiTimeoutSeconds, plugin.apiMaxRetries,
                 streamListener != null && plugin.apiStreaming && plugin.getConfig().getBoolean("chat.streaming.enabled", true),
                 isThinking && plugin.thinkingEnabled, plugin.thinkingBudget, plugin.reasoningEffort, cachedContent);
-        HttpRequest request = adapter.buildRequest(apiBaseUrl, apiKey, model, apiMessages, options);
-
         java.net.http.HttpClient client = plugin.getHttpClient();
-        if (client == null) {
-            throw new CancellationException("Plugin is shutting down");
-        }
+        if (client == null) throw new CancellationException("Plugin is shutting down");
+        var emitted = new java.util.concurrent.atomic.AtomicBoolean();
+        Consumer<AiStreamClient.Delta> observed = streamListener == null ? null : delta -> { emitted.set(true); streamListener.accept(delta); };
+        GeminiCachedContentManager.CachedOperation<ApiAdapter.AdapterResponse> operation = resource -> {
+            ApiRequestOptions attempt = new ApiRequestOptions(options.temperature(), options.topP(), options.maxTokens(),
+                    options.timeoutSeconds(), options.maxRetries(), options.streaming(), options.thinkingEnabled(),
+                    options.thinkingBudget(), options.reasoningEffort(), resource);
+            HttpRequest request = adapter.buildRequest(apiBaseUrl, apiKey, model, apiMessages, attempt);
+            return executeRequest(client, adapter, request, attempt, observed, active);
+        };
+        return cachedContent == null ? operation.run(null)
+                : plugin.geminiCachedContentManager.withFallback(cachedContent, operation, emitted::get);
+    }
 
+    private ApiAdapter.AdapterResponse executeRequest(HttpClient client, ApiAdapter adapter, HttpRequest request,
+            ApiRequestOptions options, Consumer<AiStreamClient.Delta> streamListener,
+            java.util.function.BooleanSupplier active) throws Exception {
         ApiRequestRetry retry = new ApiRequestRetry(active);
         if (options.streaming()) {
             ApiAdapter.AdapterResponse streamed = retry.stream(
@@ -373,15 +413,15 @@ public class ChatManager {
                         new com.google.gson.JsonParser().parse(body).getAsJsonObject());
                 logCacheUsage(cacheUsage);
                 return new ApiAdapter.AdapterResponse(response.content(), response.reasoning(),
-                        cacheUsage, response.reasoningSignature());
+                        cacheUsage, response.reasoningSignature(), response.contentBlocks());
             } catch (com.google.gson.JsonParseException | IllegalStateException e) {
-                String contentType = httpResponse.headers().firstValue("Content-Type").orElse("unknown");
+                String contentType = "unavailable";
                 plugin.getLogger().warning("AI provider returned an invalid response (content-type="
-                        + contentType + ", length=" + body.length() + ")");
+                        + contentType.replaceAll("[^a-zA-Z0-9/;= ._-]", "?") + ", length=" + body.length() + ")");
                 throw new IOException("AI provider returned an invalid response", e);
             }
         }
-        throw providerError(status);
+        throw new AiStreamClient.ApiHttpException(status);
     }
 
     private IOException providerError(int status) {

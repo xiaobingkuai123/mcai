@@ -65,12 +65,10 @@ public final class ConversationHistory {
         List<ApiAdapter.Message> current = new ArrayList<>();
         boolean user = false;
         for (Message m : messages) {
-            if ("user".equals(m.role())) { if (user && !current.isEmpty()) { h.addRound(current); current = new ArrayList<>(); } user = true; }
+            if ("user".equals(m.role())) { if (user && !current.isEmpty()) { if (current.stream().anyMatch(x -> "assistant".equals(x.role()))) h.addRound(current); current = new ArrayList<>(); } user = true; }
             current.add(new ApiAdapter.Message(m.role(), m.content(), m.blockType(), m.signature()));
-            if ("assistant".equals(m.role()) && user && !"thinking".equals(m.blockType()) && !"redacted_thinking".equals(m.blockType())) {
-                h.addRound(current); current = new ArrayList<>(); user = false;
-            }
         }
+        if (user && !current.isEmpty() && current.stream().anyMatch(m -> "assistant".equals(m.role()))) h.addRound(current);
         return h;
     }
 }

@@ -10,7 +10,12 @@ public interface ApiAdapter {
         public Message(String role, String content, String blockType) { this(role, content, blockType, null); }
     }
     record CacheUsage(String field, long hitTokens, long missTokens) {}
-    record AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature) {
+    record AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature,
+                           List<Message> contentBlocks) {
+        public AdapterResponse { contentBlocks = contentBlocks == null ? List.of() : List.copyOf(contentBlocks); }
+        public AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature) {
+            this(content, reasoning, cacheUsage, reasoningSignature, List.of());
+        }
         public AdapterResponse(String content, String reasoning) { this(content, reasoning, null, null); }
         public AdapterResponse(String content, String reasoning, CacheUsage cacheUsage) { this(content, reasoning, cacheUsage, null); }
     }

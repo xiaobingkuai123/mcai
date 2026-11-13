@@ -26,6 +26,7 @@ public class AnthropicAdapter implements ApiAdapter {
                 system.append(m.content());
                 continue;
             }
+            if ("thinking".equals(m.blockType()) && (m.signature() == null || m.signature().isBlank())) continue;
             String role = "tool".equals(m.role()) ? "user" : m.role();
             JsonObject item;
             JsonArray blocks;
@@ -39,6 +40,8 @@ public class AnthropicAdapter implements ApiAdapter {
                 item.add("content", blocks);
                 a.add(item);
             }
+            // Unsigned legacy reasoning cannot be replayed as an Anthropic thinking block.
+            if ("thinking".equals(m.blockType()) && (m.signature() == null || m.signature().isBlank())) continue;
             blocks.add(contentBlock(m));
         }
         JsonArray systemBlocks = new JsonArray();
@@ -51,7 +54,10 @@ public class AnthropicAdapter implements ApiAdapter {
             JsonArray blocks = cachedMessage.getAsJsonArray("content");
             if (blocks != null && blocks.size() > 0) {
                 JsonObject cache = new JsonObject(); cache.addProperty("type", "ephemeral");
-                blocks.get(blocks.size() - 1).getAsJsonObject().add("cache_control", cache);
+                for (int i = blocks.size() - 1; i >= 0; i--) {
+                    JsonObject block = blocks.get(i).getAsJsonObject();
+                    if ("text".equals(block.get("type").getAsString())) { block.add("cache_control", cache); break; }
+                }
             }
         }
         JsonObject body = new JsonObject(); body.addProperty("model", model); body.add("messages", a);
@@ -80,11 +86,18 @@ public class AnthropicAdapter implements ApiAdapter {
     @Override public AdapterResponse parseResponse(String text) {
         JsonArray blocks = JsonParser.parseString(text).getAsJsonObject().getAsJsonArray("content");
         StringBuilder content = new StringBuilder(), reasoning = new StringBuilder(); String signature = null;
+        java.util.ArrayList<Message> saved = new java.util.ArrayList<>();
         for (JsonElement element : blocks) {
             JsonObject block = element.getAsJsonObject(); String type = block.get("type").getAsString();
-            if ("thinking".equals(type)) { reasoning.append(block.get("thinking").getAsString()); if (block.has("signature")) signature = block.get("signature").getAsString(); }
-            else if ("text".equals(type)) content.append(block.get("text").getAsString());
+            if ("thinking".equals(type)) {
+                String value = block.get("thinking").getAsString();
+                String sig = block.has("signature") ? block.get("signature").getAsString() : null;
+                reasoning.append(value); if (signature == null) signature = sig;
+                saved.add(new Message("assistant", value, type, sig));
+            } else if ("text".equals(type)) {
+                String value = block.get("text").getAsString(); content.append(value); saved.add(new Message("assistant", value));
+            } else if ("redacted_thinking".equals(type)) saved.add(new Message("assistant", block.get("data").getAsString(), type));
         }
-        return new AdapterResponse(content.toString(), reasoning.length() == 0 ? null : reasoning.toString(), null, signature);
+        return new AdapterResponse(content.toString(), reasoning.isEmpty() ? null : reasoning.toString(), null, signature, saved);
     }
 }

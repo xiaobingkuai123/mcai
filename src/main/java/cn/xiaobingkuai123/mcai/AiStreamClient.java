@@ -85,7 +85,7 @@ public final class AiStreamClient {
                 return new ApiAdapter.AdapterResponse(
                         accumulator.content.toString(),
                         accumulator.reasoning.length() == 0 ? null : accumulator.reasoning.toString(),
-                        accumulator.cacheUsage
+                        accumulator.cacheUsage, accumulator.signature(), accumulator.blocks()
                 );
             } catch (IOException e) {
                 if (timedOut.get()) throw new HttpTimeoutException("AI stream timed out");
@@ -176,6 +176,7 @@ public final class AiStreamClient {
         String trimmed = data.trim();
         if (trimmed.isEmpty() || trimmed.startsWith(":")) return;
         if ("[DONE]".equals(trimmed)) {
+            if (adapter instanceof AnthropicAdapter) throw new ProtocolException("Anthropic completion event missing");
             accumulator.completed = true;
             return;
         }
@@ -248,22 +249,51 @@ public final class AiStreamClient {
         }
     }
 
-    private static void parseAnthropic(JsonObject root, String type, Accumulator accumulator) {
+    private static void parseAnthropic(JsonObject root, String type, Accumulator accumulator) throws IOException {
         if ("message_stop".equals(type)) {
+            if (accumulator.anthropic.values().stream().anyMatch(block -> !block.stopped))
+                throw new ProtocolException("Anthropic message ended with an open content block");
             accumulator.completed = true;
             return;
         }
-        if (!"content_block_delta".equals(type)) return;
-
-        JsonObject delta = object(root, "delta");
-        if (delta == null) return;
-
-        String deltaType = string(delta, "type");
-        if ("thinking_delta".equals(deltaType)) {
-            accumulator.emit(string(delta, "thinking"), "");
-        } else if ("text_delta".equals(deltaType)) {
-            accumulator.emit("", string(delta, "text"));
+        if (!type.startsWith("content_block_")) return;
+        if (!root.has("index")) throw new ProtocolException("Anthropic content block has no index");
+        int index = root.get("index").getAsInt();
+        if (index < 0) throw new ProtocolException("Invalid Anthropic content block index");
+        if ("content_block_start".equals(type)) {
+            JsonObject value = object(root, "content_block");
+            if (value == null || accumulator.anthropic.containsKey(index))
+                throw new ProtocolException("Invalid Anthropic content block start");
+            AnthropicBlock block = new AnthropicBlock(string(value, "type"));
+            accumulator.anthropic.put(index, block);
+            block.text.append(string(value, "thinking"));
+            block.text.append(string(value, "text"));
+            if ("redacted_thinking".equals(block.type)) block.text.append(string(value, "data"));
+            block.signature.append(string(value, "signature"));
+            if ("thinking".equals(block.type)) accumulator.emit(block.text.toString(), "");
+            if ("text".equals(block.type)) accumulator.emit("", block.text.toString());
+            return;
         }
+        AnthropicBlock block = accumulator.anthropic.get(index);
+        if (block == null || block.stopped) throw new ProtocolException("Inactive Anthropic content block");
+        if ("content_block_stop".equals(type)) { block.stopped = true; return; }
+        JsonObject delta = object(root, "delta");
+        if (delta == null) throw new ProtocolException("Missing Anthropic delta");
+        String deltaType = string(delta, "type");
+        if ("signature_delta".equals(deltaType) && "thinking".equals(block.type)) {
+            block.signature.append(string(delta, "signature"));
+        } else if ("thinking_delta".equals(deltaType) && "thinking".equals(block.type)) {
+            String text = string(delta, "thinking"); block.text.append(text); accumulator.emit(text, "");
+        } else if ("text_delta".equals(deltaType) && "text".equals(block.type)) {
+            String text = string(delta, "text"); block.text.append(text); accumulator.emit("", text);
+        } else throw new ProtocolException("Unexpected Anthropic content block delta");
+    }
+
+    private static final class AnthropicBlock {
+        final String type;
+        final StringBuilder text = new StringBuilder(), signature = new StringBuilder();
+        boolean stopped;
+        AnthropicBlock(String type) { this.type = type; }
     }
 
     private static void parseGemini(JsonObject root, Accumulator accumulator) throws IOException {
@@ -322,6 +352,15 @@ public final class AiStreamClient {
         private final Consumer<Delta> listener;
         private ApiAdapter.CacheUsage cacheUsage;
         private boolean completed;
+        private final java.util.SortedMap<Integer, AnthropicBlock> anthropic = new java.util.TreeMap<>();
+        private java.util.List<ApiAdapter.Message> blocks() {
+            return anthropic.values().stream().map(b -> new ApiAdapter.Message("assistant", b.text.toString(),
+                    b.type, b.signature.isEmpty() ? null : b.signature.toString())).toList();
+        }
+        private String signature() {
+            return anthropic.values().stream().filter(b -> !b.signature.isEmpty())
+                    .map(b -> b.signature.toString()).findFirst().orElse(null);
+        }
 
         private Accumulator(Consumer<Delta> listener) { this.listener = listener; }
 

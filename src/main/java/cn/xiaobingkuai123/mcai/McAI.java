@@ -135,10 +135,11 @@ public class McAI extends JavaPlugin {
             }
         }
         conversationMemories.clear();
-        rateLimiter.clear();
+        rateLimiter.close();
         waitingInputType.clear();
         selectedChatMode.clear();
         isProMode.clear();
+        if (geminiCachedContentManager != null) geminiCachedContentManager.close();
         httpClient = null;
     }
 
@@ -166,7 +167,7 @@ public class McAI extends JavaPlugin {
         apiTimeoutSeconds = getConfig().getInt("api.timeout-seconds", 120);
         systemPrompt = getConfig().getString("chat.system-prompt", "Minecraft助手");
         consoleMaxHistory = Math.max(0, getConfig().getInt("chat.console-max-history", 30));
-        logToConsole = getConfig().getBoolean("chat.log-to-console", true);
+        logToConsole = getConfig().getBoolean("chat.log-to-console", false);
         String historyModeName = getConfig().getString("chat.history.mode", "sliding");
         historyMode = "accumulate".equalsIgnoreCase(historyModeName) ? ConversationHistory.Mode.ACCUMULATE : ConversationHistory.Mode.SLIDING;
         historyPersistenceEnabled = getConfig().getBoolean("chat.history.persistence.enabled", true);

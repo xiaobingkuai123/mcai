@@ -14,9 +14,16 @@ public class BukkitScheduler implements SchedulerAdapter {
 
     @Override
     public void runTask(CommandSender sender, Runnable task, Runnable retired) {
-        // Paper 无退休概念；玩家退出后任务仍会执行。
-        // 由 task 内部自行检查 player.isOnline()。
-        Bukkit.getScheduler().runTask(plugin, task);
+        try {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (sender instanceof org.bukkit.entity.Player player && !player.isOnline()) {
+                    if (retired != null) retired.run();
+                } else task.run();
+            });
+        } catch (RuntimeException e) {
+            if (retired != null) retired.run();
+            throw e;
+        }
     }
 
     @Override

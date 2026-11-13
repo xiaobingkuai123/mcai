@@ -75,7 +75,7 @@ chat:
   system-prompt: "You are a helpful Minecraft server assistant. Answer briefly and clearly."
   # Console history is independent of player permission groups.
   console-max-history: 30
-  log-to-console: true
+  log-to-console: false
   think-delay-ticks: 20
   history:
     # sliding retains the latest rounds; accumulate blocks new requests at the permission group's max-history.

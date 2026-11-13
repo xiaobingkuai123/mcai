@@ -17,13 +17,14 @@ public class FoliaScheduler implements SchedulerAdapter {
     @Override
     public void runTask(CommandSender sender, Runnable task, Runnable retired) {
         if (sender instanceof Player player) {
+            Runnable onRetired = once(retired);
             var scheduled = player.getScheduler().run(
                     plugin,
                     ignored -> task.run(),
-                    retired
+                    onRetired
             );
-            if (scheduled == null && retired != null) {
-                retired.run();
+            if (scheduled == null) {
+                onRetired.run();
             }
         } else if (sender instanceof ConsoleCommandSender) {
             Bukkit.getGlobalRegionScheduler().run(plugin, ignored -> task.run());
@@ -43,6 +44,11 @@ public class FoliaScheduler implements SchedulerAdapter {
         } else {
             Bukkit.getGlobalRegionScheduler().runDelayed(plugin, ignored -> task.run(), delayTicks);
         }
+    }
+
+    static Runnable once(Runnable action) {
+        var called = new java.util.concurrent.atomic.AtomicBoolean();
+        return () -> { if (called.compareAndSet(false, true) && action != null) action.run(); };
     }
 
     @Override
