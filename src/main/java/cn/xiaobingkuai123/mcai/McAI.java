@@ -203,7 +203,10 @@ public class McAI extends JavaPlugin {
         String lower = providerName.toLowerCase();
         if ("openai".equals(lower)) {
             if ("responses".equalsIgnoreCase(apiType)) {
-                return new OpenAIResponsesAdapter(apiTimeoutSeconds);
+                boolean enabled = section != null && section.getBoolean("reasoning-summary.enabled", true);
+                String level = section == null ? "auto" : section.getString("reasoning-summary.level", "auto");
+                Set<String> models = section == null ? Set.of() : new HashSet<>(section.getStringList("reasoning-summary.models"));
+                return new OpenAIResponsesAdapter(apiTimeoutSeconds, enabled, models, level);
             } else {
                 return new OpenAIAdapter(apiTimeoutSeconds);
             }

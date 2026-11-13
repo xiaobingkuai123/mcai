@@ -38,6 +38,11 @@ api:
     normal-think-model: "gpt-6.1-sol"
     pro-model: "gpt-6.1-sol"
     pro-think-model: "gpt-6.1-sol"
+    reasoning-summary:
+      enabled: true
+      level: "auto"
+      models:
+        - "gpt-6.1-sol"
     # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
     max-tokens-fast: 4096
     # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).

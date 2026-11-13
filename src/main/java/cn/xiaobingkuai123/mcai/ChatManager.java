@@ -46,9 +46,6 @@ public class ChatManager {
         }
         final int maxHist = economyManager.getConversationRoundLimit(player);
         final int modeCost = economyManager.getCostForMode(mode);
-        final int baseModeCost = economyManager.getCostForMode(mode.replace("_think", ""));
-        final int thinkingPremium = Math.max(0, modeCost - baseModeCost);
-
         final EconomyManager.Charge charge;
         try {
             charge = economyManager.consumePoints(player, mode);
@@ -93,18 +90,6 @@ public class ChatManager {
                     throw new IOException("AI returned an empty answer");
                 }
 
-                if (isThinking && (reasoning == null || reasoning.isBlank()) && thinkingPremium > 0) {
-                    int refunded = economyManager.refundPoints(charge, thinkingPremium);
-                    if (refunded > 0) {
-                        plugin.schedulerAdapter.runTask(player, () -> {
-                            if (player.isOnline()) {
-                                player.sendMessage(plugin.languageManager.get(
-                                        "refund-no-reasoning", "points", String.valueOf(refunded)));
-                            }
-                        });
-                    }
-                }
-
                 ConversationHistory memory = conversationMemory(playerId, maxHist);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
@@ -129,11 +114,12 @@ public class ChatManager {
                 }
 
                 if (plugin.logToConsole) {
-                    String displayText = (reasoning != null && !reasoning.isBlank())
-                            ? reasoning + "\n" + answer : answer;
+                    if (reasoning != null && !reasoning.isBlank()) {
+                        plugin.getLogger().info("[" + plugin.languageManager.get("log-console-reasoning")
+                                + "] -> " + playerName + ": " + redactLog(ChatColor.stripColor(reasoning)));
+                    }
                     plugin.getLogger().info("[" + plugin.languageManager.get("log-response-prefix")
-                            + "] -> " + playerName + ": "
-                            + redactLog(ChatColor.stripColor(displayText)));
+                            + "] -> " + playerName + ": " + redactLog(ChatColor.stripColor(answer)));
                 }
 
                 if (output != null) {
@@ -146,7 +132,7 @@ public class ChatManager {
                         if (isThinking && finalReasoning != null && !finalReasoning.isBlank()) {
                             plugin.soundManager.playReasoningDone(player);
                             PlayerStreamOutput.sendText(plugin, player,
-                                    "reasoning-label", finalReasoning, ChatColor.GRAY);
+                                    "reasoning-summary-label", finalReasoning, ChatColor.GRAY);
                             plugin.schedulerAdapter.runTaskLater(player, () -> {
                                 if (!player.isOnline()) return;
                                 plugin.soundManager.playAnswer(player);

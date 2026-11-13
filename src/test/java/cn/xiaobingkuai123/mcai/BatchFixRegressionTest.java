@@ -63,7 +63,10 @@ class BatchFixRegressionTest {
             +block(1,"text","hello","")+stop(1)+block(2,"thinking","c","sig2")+stop(2)
             +block(3,"redacted_thinking","opaque","")+stop(3)+block(4,"text","world","")+stop(4)
             +event("{\"type\":\"message_stop\"}");
-        var response=sendStream(stream);
+        List<AiStreamClient.Delta> visible = new ArrayList<>();
+        var response=sendStream(stream, visible::add);
+        assertEquals("abc", visible.stream().map(AiStreamClient.Delta::reasoning).collect(java.util.stream.Collectors.joining()));
+        assertEquals("helloworld", visible.stream().map(AiStreamClient.Delta::content).collect(java.util.stream.Collectors.joining()));
         assertEquals("helloworld",response.content()); assertEquals("abc",response.reasoning());
         assertEquals("sig1",response.reasoningSignature()); assertEquals(5,response.contentBlocks().size());
         var history=new ConversationHistory(ConversationHistory.Mode.SLIDING,5);
@@ -86,10 +89,13 @@ class BatchFixRegressionTest {
         request.bodyPublisher().orElseThrow().subscribe(subscriber); return subscriber.result.get(5,TimeUnit.SECONDS);
     }
     private ApiAdapter.AdapterResponse sendStream(String stream) throws Exception {
+        return sendStream(stream, d -> {});
+    }
+    private ApiAdapter.AdapterResponse sendStream(String stream, java.util.function.Consumer<AiStreamClient.Delta> listener) throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",e->{byte[] b=stream.getBytes(StandardCharsets.UTF_8);e.getResponseHeaders().set("Content-Type","text/event-stream");e.sendResponseHeaders(200,b.length);try(var out=e.getResponseBody()){out.write(b);}});server.start();
         try(var client=HttpClient.newHttpClient()) {
-            return AiStreamClient.send(client,new AnthropicAdapter(5),HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getAddress().getPort())).timeout(java.time.Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString("{}")).build(),d->{});
+            return AiStreamClient.send(client,new AnthropicAdapter(5),HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getAddress().getPort())).timeout(java.time.Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString("{}")).build(),listener);
         } finally {server.stop(0);}
     }
     @Test void anthropicDoesNotCompleteAtBlockStopOrAcceptUnclosedBlocks() {
@@ -101,4 +107,26 @@ class BatchFixRegressionTest {
         var response=new AnthropicAdapter(5).parseResponse("{\"content\":[{\"type\":\"thinking\",\"thinking\":\"a\",\"signature\":\"s1\"},{\"type\":\"thinking\",\"thinking\":\"b\",\"signature\":\"s2\"},{\"type\":\"text\",\"text\":\"ok\"}]}");
         assertEquals("s1",response.contentBlocks().get(0).signature()); assertEquals("s2",response.contentBlocks().get(1).signature());
     }
+    @Test void responsesStreamSeparatesSummaryAndAnswerAndUsesDoneFallbackOnce() throws Exception {
+        String stream = event("{\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"}}")
+                + event("{\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":0,\"delta\":\"one\"}")
+                + event("{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":0,\"text\":\"one\"}")
+                + event("{\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"one\"}}")
+                + event("{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":1,\"text\":\"two\"}")
+                + event("{\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":2,\"part\":{\"type\":\"summary_text\",\"text\":\"three\"}}")
+                + event("{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":2,\"text\":\"three\"}")
+                + event("{\"type\":\"response.reasoning_text.delta\",\"delta\":\"hidden\"}")
+                + event("{\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}")
+                + event("{\"type\":\"response.completed\"}");
+        List<AiStreamClient.Delta> deltas = new ArrayList<>();
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",e->{byte[] b=stream.getBytes(StandardCharsets.UTF_8);e.getResponseHeaders().set("Content-Type","text/event-stream");e.sendResponseHeaders(200,b.length);try(var out=e.getResponseBody()){out.write(b);}}); server.start();
+        try(var client=HttpClient.newHttpClient()) {
+            var response=AiStreamClient.send(client,new OpenAIResponsesAdapter(5,true,Set.of("m"),"auto"),HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/v1/responses")).timeout(java.time.Duration.ofSeconds(5)).POST(HttpRequest.BodyPublishers.ofString("{}")).build(),deltas::add);
+            assertEquals("onetwothree", response.reasoning()); assertEquals("answer", response.content());
+            assertEquals(List.of("one","two","three"), deltas.stream().map(AiStreamClient.Delta::reasoning).filter(x->!x.isEmpty()).toList());
+            assertEquals(List.of("answer"), deltas.stream().map(AiStreamClient.Delta::content).filter(x->!x.isEmpty()).toList());
+        } finally { server.stop(0); }
+    }
+
 }

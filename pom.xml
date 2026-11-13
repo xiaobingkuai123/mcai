@@ -82,8 +82,15 @@
         <dependency>
             <groupId>org.geysermc.floodgate</groupId>
             <artifactId>api</artifactId>
-            <version>2.2.2-SNAPSHOT</version>
+            <version>2.2.5-SNAPSHOT</version>
             <scope>provided</scope>
+            <exclusions>
+                <!-- Server-side Geyser implementation; not used by this plugin's API calls. -->
+                <exclusion>
+                    <groupId>org.geysermc.geyser</groupId>
+                    <artifactId>common</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.geysermc.cumulus</groupId>

@@ -94,4 +94,27 @@ class AdapterRequestTest {
         assertEquals("sig", content.get(0).getAsJsonObject().get("signature").getAsString());
         assertEquals("text", content.get(1).getAsJsonObject().get("type").getAsString());
     }
+    @Test void responsesSummaryUsesExactAllowListAndLevel() throws Exception {
+        var options = new ApiRequestOptions(.4, .9, 100, 30, 0, false, true, 2048, "high");
+        var adapter = new OpenAIResponsesAdapter(30, true, java.util.Set.of("gpt-6.1-sol"), "detailed");
+        JsonObject supported = body(adapter.buildRequest("https://api.openai.com", "key", "gpt-6.1-sol", List.of(), options));
+        assertEquals("detailed", supported.getAsJsonObject("reasoning").get("summary").getAsString());
+        JsonObject unsupported = body(adapter.buildRequest("https://api.openai.com", "key", "gpt-6.1-solution", List.of(), options));
+        assertFalse(unsupported.getAsJsonObject("reasoning").has("summary"));
+        var normal = new ApiRequestOptions(.4, .9, 100, 30, 0, false, false, 2048, "high");
+        assertFalse(body(adapter.buildRequest("https://api.openai.com", "key", "gpt-6.1-sol", List.of(), normal)).has("reasoning"));
+        assertFalse(body(new OpenAIAdapter(30).buildRequest("https://api.openai.com", "key", "gpt-6.1-sol", List.of(), options)).has("summary"));
+    }
+
+    @Test void responsesNonStreamingCombinesAllOfficialSummaryParts() throws Exception {
+        var response = new OpenAIResponsesAdapter(30).parseResponse("{\"output\":[{\"type\":\"reasoning\",\"encrypted_content\":\"secret\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"one\"},{\"type\":\"summary_text\",\"text\":\"two\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}");
+        assertEquals("onetwo", response.reasoning()); assertEquals("answer", response.content());
+    }
+
+    @Test void anthropicThinkingRequestsSummarizedDisplay() throws Exception {
+        var options = new ApiRequestOptions(.4, .9, 4096, 30, 0, false, true, 2048, "high");
+        JsonObject request = body(new AnthropicAdapter(30).buildRequest("https://api.anthropic.com", "key", "claude-sonnet-4", List.of(), options));
+        assertEquals("summarized", request.getAsJsonObject("thinking").get("display").getAsString());
+    }
+
 }

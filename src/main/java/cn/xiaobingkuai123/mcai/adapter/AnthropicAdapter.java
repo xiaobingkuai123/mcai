@@ -66,7 +66,7 @@ public class AnthropicAdapter implements ApiAdapter {
         if (o.thinkingEnabled()) {
             int budget = Math.min(o.thinkingBudget(), o.maxTokens() - 1);
             if (budget < 1024) throw new IllegalArgumentException("Anthropic maxTokens must exceed thinking budget and be at least 1025");
-            JsonObject t = new JsonObject(); t.addProperty("type", "enabled"); t.addProperty("budget_tokens", budget); body.add("thinking", t);
+            JsonObject t = new JsonObject(); t.addProperty("type", "enabled"); t.addProperty("budget_tokens", budget); t.addProperty("display", "summarized"); body.add("thinking", t);
         } else { body.addProperty("temperature", o.temperature()); body.addProperty("top_p", o.topP()); }
         return HttpRequest.newBuilder().uri(URI.create(ApiUrls.v1(baseUrl, "/messages")))
                 .header("Content-Type", "application/json").header("x-api-key", key).header("anthropic-version", apiVersion)

@@ -234,8 +234,20 @@ public final class AiStreamClient {
     }
 
     private static void parseResponses(JsonObject root, String type, Accumulator accumulator) throws IOException {
-        if ("response.reasoning_summary_text.delta".equals(type)) {
-            accumulator.emit(string(root, "delta"), "");
+        if ("response.reasoning_summary_part.added".equals(type)) {
+            accumulator.summaryState(root);
+        } else if ("response.reasoning_summary_text.delta".equals(type)) {
+            String key = accumulator.summaryState(root);
+            String delta = string(root, "delta");
+            if (!delta.isEmpty()) { accumulator.summaryDeltas.add(key); accumulator.emit(delta, ""); }
+        } else if ("response.reasoning_summary_text.done".equals(type)
+                || "response.reasoning_summary_part.done".equals(type)) {
+            String key = accumulator.summaryState(root);
+            if (!accumulator.summaryDeltas.contains(key)) {
+                JsonObject part = object(root, "part");
+                String complete = "response.reasoning_summary_text.done".equals(type) ? string(root, "text") : string(part, "text");
+                if (!complete.isEmpty()) { accumulator.summaryDeltas.add(key); accumulator.emit(complete, ""); }
+            }
         } else if ("response.output_text.delta".equals(type)) {
             accumulator.emit("", string(root, "delta"));
         } else if ("response.completed".equals(type)) {
@@ -352,6 +364,12 @@ public final class AiStreamClient {
         private final Consumer<Delta> listener;
         private ApiAdapter.CacheUsage cacheUsage;
         private boolean completed;
+        private final java.util.Set<String> summaryDeltas = new java.util.HashSet<>();
+        private final java.util.LinkedHashSet<String> summaryParts = new java.util.LinkedHashSet<>();
+        private String summaryState(JsonObject root) {
+            String key = string(root, "item_id") + "\0" + string(root, "output_index") + "\0" + string(root, "summary_index");
+            summaryParts.add(key); return key;
+        }
         private final java.util.SortedMap<Integer, AnthropicBlock> anthropic = new java.util.TreeMap<>();
         private java.util.List<ApiAdapter.Message> blocks() {
             return anthropic.values().stream().map(b -> new ApiAdapter.Message("assistant", b.text.toString(),
