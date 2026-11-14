@@ -60,11 +60,19 @@ public final class GeminiCachedContentManager implements AutoCloseable {
         long started = clock.getAsLong();
         JsonObject body = new JsonObject(); body.addProperty("model", "models/" + model);
         JsonArray contents = new JsonArray(), systems = new JsonArray();
+        JsonObject previous = null;
         for (ApiAdapter.Message message : prefix) {
             JsonObject part = new JsonObject(); part.addProperty("text", message.content());
             if ("system".equals(message.role())) { systems.add(part); continue; }
-            JsonArray parts = new JsonArray(); parts.add(part); JsonObject content = new JsonObject();
-            content.addProperty("role", "assistant".equals(message.role()) ? "model" : "user"); content.add("parts", parts); contents.add(content);
+            if ("gemini_thought".equals(message.blockType())) part.addProperty("thought", true);
+            if (message.signature() != null) part.addProperty("thoughtSignature", message.signature());
+            String role = "assistant".equals(message.role()) ? "model" : "user";
+            if (previous == null || !"model".equals(role) || !message.blockType().startsWith("gemini_")
+                    || !role.equals(previous.get("role").getAsString())) {
+                previous = new JsonObject(); previous.addProperty("role", role);
+                previous.add("parts", new JsonArray()); contents.add(previous);
+            }
+            previous.getAsJsonArray("parts").add(part);
         }
         if (!systems.isEmpty()) { JsonObject system = new JsonObject(); system.add("parts", systems); body.add("systemInstruction", system); }
         body.add("contents", contents); body.addProperty("ttl", "3600s");

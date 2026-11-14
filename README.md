@@ -200,3 +200,41 @@ Paper API, Vault, Floodgate, and Cumulus are `provided` dependencies supplied by
 ## License
 
 McAI is licensed under the GNU General Public License v3.0. See [`LICENSE`](LICENSE).
+
+## 公共 AI（Public AI）
+
+玩家可在聊天开头输入 `@AI 问题`，或使用 `/ai public chat <问题>`。
+两个入口共享一个公共会话、限流和扣费流程。正在购买或输入私人问题时，原输入优先。
+公共提问只展示原问题；玩家上下文不会直接广播。
+
+- 使用权限：`mcai.use` 与 `mcai.public.use`（后者默认 true）。
+- 管理权限：`mcai.admin`。`/ai public clear` 清空公共历史并解除锁定；
+  `/ai public setname <名称>` 修改并保存触发名称（可输入 @ 前缀，最多 24 个 Unicode code points）。
+- `/ai clear` 仍只清空个人历史。Java 主菜单提供个人/公共历史选择和二次确认，公共选项仅管理员可操作。
+- `/ai reload` 重载公共配置和 adapter，不主动解除 LOCKED。
+
+`config.yml` 的 `public-ai` 独立控制 provider、model、system-prompt、cost-points、thinking、streaming 和 history。
+凭据和 API 类型仍读取 `api.<provider>`，不重复存储 key。费用允许 0，不允许负数。
+`thinking.enabled=false` 不启用供应商 thinking；不支持的能力由现有 adapter 过滤。
+只公开 Anthropic summarized thinking 和允许列表中 OpenAI Responses 的 reasoning summary；
+DeepSeek reasoning_content、Gemini thought 和 Chat Completions 原始 reasoning 不公开。
+
+`streaming.enabled=true` 时按 `buffer-code-points` 与 `flush-interval-ms` 缓冲输出。
+`audience=all` 向全服实时发送；`audience=asker` 只向提问者实时发送，其他玩家在完成后收到完整结果。
+关闭 streaming 后，全服只收到最终结果。提问者离线不取消公共请求。
+
+历史 `mode=sliding` 按 `max-rounds` 滑动；`accumulate` 在成功完成最后一轮后检查上限：
+无在线管理员自动开始新会话；有管理员则打开决策 GUI，第一个有效决策生效。
+接受开始新会话；拒绝或 60 秒真实时间超时进入 LOCKED；PENDING 最后一名受邀管理员退出自动开始新会话。
+LOCKED 不因管理员退出解锁，只能明确清空公共历史。
+
+公共历史持久化由 `public-ai.history.persistence.enabled` 独立控制，文件为 `history/public-ai.yml`。
+锁定单独保存为 `public-ai-state.yml`，即使历史持久化关闭也保留，均使用临时文件和原子替换。
+重启时只加载，不打开管理员 GUI；下一次 submit 才检查 capped。
+
+`player-context-template` 内置支持 `{player}`。安装可选 PlaceholderAPI 后反射解析 `%placeholder%`；
+没有安装时仍可使用，未解析占位符会移除，上下文清理控制字符并限制 500 code points。
+
+Paper 全局操作使用主线程；Folia 使用 GlobalRegionScheduler 协调在线玩家快照，
+权限、PAPI、GUI 和消息在各玩家 EntityScheduler 执行，HTTP 与公共 YAML 写入在后台执行。
+本次开发环境未运行真实 Paper/Folia 服务器；真实跨区域移动、GUI、PAPI、供应商流式联网仍需服务器集成验证。

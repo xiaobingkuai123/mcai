@@ -117,4 +117,70 @@ class AdapterRequestTest {
         assertEquals("summarized", request.getAsJsonObject("thinking").get("display").getAsString());
     }
 
+    @Test void publicThinkingOptionsReachProviderWithoutPrivateDefaults() throws Exception {
+        var adapter = new OpenAIResponsesAdapter(30, true, java.util.Set.of("public-model"), "auto");
+        var messages = List.of(new ApiAdapter.Message("user", "question"));
+        var on = body(adapter.buildRequest("https://example.test", "key", "public-model", messages,
+                new ApiRequestOptions(.7,1,8192,30,0,true,true,2048,"high")));
+        assertEquals("public-model", on.get("model").getAsString());
+        assertEquals("high", on.getAsJsonObject("reasoning").get("effort").getAsString());
+        assertEquals("auto", on.getAsJsonObject("reasoning").get("summary").getAsString());
+        var off = body(adapter.buildRequest("https://example.test", "key", "public-model", messages,
+                new ApiRequestOptions(.7,1,8192,30,0,true,false,0,null)));
+        assertFalse(off.has("reasoning"));
+        var anthropic = body(new AnthropicAdapter(30).buildRequest("https://example.test", "key", "m", messages,
+                new ApiRequestOptions(.7,1,8192,30,0,true,true,2048,"high")));
+        assertEquals(2048,anthropic.getAsJsonObject("thinking").get("budget_tokens").getAsInt());
+        assertEquals("summarized",anthropic.getAsJsonObject("thinking").get("display").getAsString());
+    }
+
+
+    @Test void deepSeekUsesChatReasoningAndEffortWithoutAnySummaryParameter() throws Exception {
+        var adapter = new DeepSeekAdapter(30);
+        var request = adapter.buildRequest("https://api.deepseek.com", "key", "deepseek-reasoner", List.of(),
+                new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 2048, "high"));
+        assertEquals("/v1/chat/completions", request.uri().getPath());
+        var json = body(request);
+        assertEquals("enabled", json.getAsJsonObject("thinking").get("type").getAsString());
+        assertEquals("high", json.get("reasoning_effort").getAsString());
+        assertFalse(json.has("reasoning")); assertFalse(json.toString().contains("summary"));
+        assertTrue(json.get("stream").getAsBoolean());
+    }
+
+    @Test void geminiThoughtOutputAndInternalBudgetRemainIndependentWithoutSummaryWhitelist() throws Exception {
+        for (String model : List.of("gemini-2.5-flash", "gateway-future-thinking-model")) {
+            for (boolean include : List.of(true, false)) {
+                var options = new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 2048, "high", null, include);
+                var request = new GeminiAdapter(30).buildRequest("https://generativelanguage.googleapis.com", "key", model, List.of(), options);
+                assertTrue(request.uri().getPath().endsWith(":generateContent"));
+                var thinking = body(request).getAsJsonObject("generationConfig").getAsJsonObject("thinkingConfig");
+                assertEquals(include, thinking.get("includeThoughts").getAsBoolean());
+                assertEquals(2048, thinking.get("thinkingBudget").getAsInt());
+                assertFalse(thinking.has("thinkingLevel"));
+            }
+        }
+    }
+
+    @Test void geminiLevelModelsSendLevelAlongsideIndependentIncludeThoughts() throws Exception {
+        for (String model : List.of("gemini-3-flash-preview", "models/gemini-3-pro-preview")) {
+            for (boolean include : List.of(true, false)) {
+                var options = new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 2048, "low", null, include);
+                var json = body(new GeminiAdapter(30).buildRequest("https://example.test", "key", model, List.of(), options));
+                var thinking = json.getAsJsonObject("generationConfig").getAsJsonObject("thinkingConfig");
+                assertEquals("low", thinking.get("thinkingLevel").getAsString());
+                assertEquals(include, thinking.get("includeThoughts").getAsBoolean());
+                assertFalse(thinking.has("thinkingBudget"));
+            }
+        }
+    }
+
+    @Test void geminiPrivateLegacyOptionsStillRequestThoughtsAndEmptyThoughtsDoNotHideAnswers() throws Exception {
+        var adapter = new GeminiAdapter(30);
+        var json = body(adapter.buildRequest("https://example.test", "key", "gemini-2.5-flash", List.of(),
+                new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 4096, "medium")));
+        assertTrue(json.getAsJsonObject("generationConfig").getAsJsonObject("thinkingConfig").get("includeThoughts").getAsBoolean());
+        var response = adapter.parseResponse("{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"\"},{\"text\":\"one\"},{\"thought\":false,\"text\":\"two\"},{\"thoughtSignature\":\"secret\"}]}}]}");
+        assertNull(response.reasoning()); assertEquals("onetwo", response.content());
+        assertEquals("secret", response.contentBlocks().get(3).signature());
+    }
 }

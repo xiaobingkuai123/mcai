@@ -13,7 +13,7 @@ public class JavaMainMenu {
 
     public void open() {
         LanguageManager lang = plugin.languageManager;
-        Inventory inventory = Bukkit.createInventory(new MainMenuHolder(), 9, lang.get("gui-main-title"));
+        Inventory inventory = Bukkit.createInventory(new MainMenuHolder(MainMenuHolder.View.MAIN), 9, lang.get("gui-main-title"));
         ItemStack glassPane = new ItemStack(Material.BLACK_STAINED_GLASS_PANE);
         ItemMeta glassMeta = glassPane.getItemMeta();
         glassMeta.setDisplayName(" ");

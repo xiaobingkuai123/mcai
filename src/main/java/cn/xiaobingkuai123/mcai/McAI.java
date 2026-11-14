@@ -4,6 +4,7 @@ import cn.xiaobingkuai123.mcai.adapter.*;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -26,24 +27,12 @@ public class McAI extends JavaPlugin {
     SchedulerAdapter schedulerAdapter;
     final AtomicBoolean isReloading = new AtomicBoolean(false);
 
-    volatile String normalProviderName;
-    volatile String proProviderName;
     volatile int apiTimeoutSeconds;
     volatile int thinkDelayTicks;
-    volatile String systemPrompt;
     volatile int consoleMaxHistory;
     volatile boolean logToConsole;
     volatile ConversationHistory.Mode historyMode;
     volatile boolean historyPersistenceEnabled;
-    volatile boolean geminiCachedContentEnabled;
-    volatile boolean roundPromptEnabled;
-    volatile double apiTemperature;
-    volatile double apiTopP;
-    volatile int apiMaxRetries;
-    volatile boolean apiStreaming;
-    volatile boolean thinkingEnabled;
-    volatile int thinkingBudget;
-    volatile String reasoningEffort;
     final Map<UUID, ConversationHistory> conversationMemories = new ConcurrentHashMap<>();
     HistoryPersistence historyPersistence;
     GeminiCachedContentManager geminiCachedContentManager;
@@ -57,11 +46,16 @@ public class McAI extends JavaPlugin {
     volatile int ratePerMinute;
     volatile boolean dailyLimitEnabled;
     volatile boolean economyEnabled;
-    volatile ApiAdapter normalApiAdapter;
-    volatile ApiAdapter proApiAdapter;
+    final Map<String, PersonalMode> personalModes = new ConcurrentHashMap<>();
+
+    record PersonalMode(String provider, ApiAdapter adapter, String apiKey, String baseUrl,
+            String model, int maxTokens, boolean thinking, String strengthType, int thinkingBudget,
+            String strengthValue, String display) {}
+
 
     CommandHandler commandHandler;
     ChatManager chatManager;
+    PublicAiManager publicAiManager;
     EconomyManager economyManager;
 
     final RequestRateLimiter rateLimiter = new RequestRateLimiter();
@@ -105,6 +99,7 @@ public class McAI extends JavaPlugin {
         }
         economyManager = new EconomyManager(this);
         chatManager = new ChatManager(this, economyManager);
+        publicAiManager = new PublicAiManager(this);
         commandHandler = new CommandHandler(this, chatManager, economyManager);
         PluginCommand aiCommand = getCommand("ai");
         if (aiCommand != null) {
@@ -119,6 +114,7 @@ public class McAI extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (publicAiManager != null) publicAiManager.shutdown();
         // Folia 热禁用时无法跨区域清除在线玩家的 BossBar。
         // 接受限制：BossBar 保留到玩家断开连接。
         for (PlayerStreamOutput output : activeStreamOutputs.values()) {
@@ -158,30 +154,24 @@ public class McAI extends JavaPlugin {
 
     void refreshConfigurationCache() {
         reloadConfig();
-        if (getConfig().getConfigurationSection("api") == null
-                || getConfig().getConfigurationSection("chat") == null) {
-            throw new IllegalArgumentException("config.yml must contain api and chat sections");
-        }
-        normalProviderName = getConfig().getString("api.normal-provider", "deepseek");
-        proProviderName = getConfig().getString("api.pro-provider", "deepseek");
-        apiTimeoutSeconds = getConfig().getInt("api.timeout-seconds", 120);
-        systemPrompt = getConfig().getString("chat.system-prompt", "Minecraft助手");
-        consoleMaxHistory = Math.max(0, getConfig().getInt("chat.console-max-history", 30));
-        logToConsole = getConfig().getBoolean("chat.log-to-console", false);
-        String historyModeName = getConfig().getString("chat.history.mode", "sliding");
+        requireSection("ai");
+        requireSection("ai.adapters");
+        ConfigurationSection request = requireSection("ai.adapters.request");
+        apiTimeoutSeconds = Math.max(1, request.getInt("timeout-seconds", 120));
+
+        var personal = requireSection("ai.personal");
+        consoleMaxHistory = Math.max(0, personal.getInt("console.max-history", 30));
+        logToConsole = personal.getBoolean("console.log-to-console", false);
+        String historyModeName = personal.getString("history.mode", "sliding");
         historyMode = "accumulate".equalsIgnoreCase(historyModeName) ? ConversationHistory.Mode.ACCUMULATE : ConversationHistory.Mode.SLIDING;
-        historyPersistenceEnabled = getConfig().getBoolean("chat.history.persistence.enabled", true);
-        geminiCachedContentEnabled = getConfig().getBoolean("api.gemini.cached-content.enabled", false);
-        roundPromptEnabled = getConfig().getBoolean("chat.round-prompt.enabled", true);
-        apiTemperature = getConfig().getDouble("api.request.temperature", 0.7);
-        apiTopP = getConfig().getDouble("api.request.top-p", 1.0);
-        apiMaxRetries = Math.max(0, getConfig().getInt("api.request.max-retries", 1));
-        apiStreaming = getConfig().getBoolean("api.request.streaming", true);
-        thinkingEnabled = getConfig().getBoolean("api.request.thinking.enabled", true);
-        thinkingBudget = TokenBudget.thinkingTokens(
-                getConfig().getInt("api.request.thinking.budget", 4096));
-        reasoningEffort = getConfig().getString("api.request.reasoning-effort", "medium");
-        thinkDelayTicks = getConfig().getInt("chat.think-delay-ticks", 20);
+        historyPersistenceEnabled = personal.getBoolean("history.persistence.enabled", true);
+        thinkDelayTicks = Math.max(0, personal.getInt("streaming.answer-delay-ticks", 20));
+
+        personalModes.clear();
+        for (String mode : List.of("normal", "normal-thinking", "advanced", "advanced-thinking")) {
+            personalModes.put(mode, readPersonalMode(requireSection("ai.personal.modes." + mode)));
+        }
+
         normalCostPoints = getConfig().getInt("points.normal-cost", 1);
         normalThinkCostPoints = getConfig().getInt("points.normal-think-cost", 2);
         proCostPoints = getConfig().getInt("points.pro-cost", 3);
@@ -192,34 +182,97 @@ public class McAI extends JavaPlugin {
         ratePerMinute = getConfig().getInt("rate-limit.per-minute", 3);
         dailyLimitEnabled = getConfig().getBoolean("daily-limit.enabled", true);
         economyEnabled = (economy != null);
-        normalApiAdapter = createAdapter(normalProviderName);
-        proApiAdapter = createAdapter(proProviderName);
+        validateDisplayModes();
         soundManager.reload();
     }
 
-    private ApiAdapter createAdapter(String providerName) {
-        var section = getConfig().getConfigurationSection("api." + providerName);
+    private ConfigurationSection requireSection(String path) {
+        var section = getConfig().getConfigurationSection(path);
+        if (section == null) throw new IllegalArgumentException("Missing configuration section: " + path);
+        return section;
+    }
+
+    private PersonalMode readPersonalMode(ConfigurationSection section) {
+        String provider = requireText(section, "provider");
+        var adapterSection = requireSection("ai.adapters." + provider);
+        boolean thinking = section.getBoolean("thinking.enabled", false);
+        String type = section.getString("thinking.strength.type", "effort");
+        String value = section.getString("thinking.strength.value", "medium");
+        int budget = "budget".equalsIgnoreCase(type) ? TokenBudget.thinkingTokens(section.getInt("thinking.strength.value", 4096)) : 4096;
+        if (thinking && !(type.equalsIgnoreCase("effort") || type.equalsIgnoreCase("budget") || type.equalsIgnoreCase("level")))
+            throw new IllegalArgumentException("Unsupported thinking strength type at " + section.getCurrentPath());
+        return new PersonalMode(provider, createAdapter(provider), requireText(adapterSection, "api-key"),
+                requireText(adapterSection, "base-url"), requireText(section, "model"),
+                TokenBudget.outputTokens(section.getInt("output.max-tokens", thinking ? 32768 : 4096)),
+                thinking, type.toLowerCase(Locale.ROOT), thinking ? budget : 0, value,
+                section.getString("thinking.display", "none").toLowerCase(Locale.ROOT));
+    }
+
+    private String requireText(ConfigurationSection section, String path) {
+        String value = section.getString(path, "");
+        if (value == null || value.isBlank())
+            throw new IllegalArgumentException("Missing configuration value: " + section.getCurrentPath() + "." + path);
+        return value;
+    }
+
+    private void validateDisplayModes() {
+        personalModes.values().forEach(this::validateDisplay);
+        var publicSection = requireSection("ai.public");
+        String provider = requireText(publicSection, "provider");
+        requireSection("ai.adapters." + provider);
+        String display = publicSection.getString("thinking.display", "none").toLowerCase(Locale.ROOT);
+        if (!Set.of("none", "summary", "reasoning").contains(display)) throw new IllegalArgumentException("Invalid thinking.display: " + display);
+        if ("summary".equals(display) && "deepseek".equalsIgnoreCase(provider)) throw new IllegalArgumentException("DeepSeek does not provide reasoning summaries; use display: reasoning or none");
+        if ("reasoning".equals(display) && "gemini".equalsIgnoreCase(provider)) throw new IllegalArgumentException("Gemini provides thought summaries, not raw reasoning; use display: summary or none");
+        validateStrength(provider, publicSection.getString("thinking.strength.type", "effort"), publicSection.getBoolean("thinking.enabled", false));
+    }
+
+    private void validateStrength(String provider, String type, boolean thinking) {
+        if (!thinking) return;
+        boolean valid = switch (provider.toLowerCase(Locale.ROOT)) {
+            case "openai" -> "effort".equalsIgnoreCase(type);
+            case "deepseek" -> "effort".equalsIgnoreCase(type);
+            case "gemini" -> Set.of("budget", "level").contains(type.toLowerCase(Locale.ROOT));
+            case "anthropic" -> "budget".equalsIgnoreCase(type);
+            default -> false;
+        };
+        if (!valid) throw new IllegalArgumentException("Thinking strength type '" + type + "' is not supported by " + provider);
+    }
+
+    private void validateDisplay(PersonalMode mode) {
+        if (!Set.of("none", "summary", "reasoning").contains(mode.display())) throw new IllegalArgumentException("Invalid thinking.display: " + mode.display());
+        if ("summary".equals(mode.display()) && "deepseek".equalsIgnoreCase(mode.provider())) throw new IllegalArgumentException("DeepSeek does not provide reasoning summaries");
+        if ("reasoning".equals(mode.display()) && "gemini".equalsIgnoreCase(mode.provider())) throw new IllegalArgumentException("Gemini provides thought summaries, not raw reasoning");
+        validateStrength(mode.provider(), mode.strengthType(), mode.thinking());
+    }
+
+
+    ApiAdapter createAdapter(String providerName) {
+        var section = getConfig().getConfigurationSection("ai.adapters." + providerName);
         String apiType = section != null ? section.getString("api-type", "") : "";
         String lower = providerName.toLowerCase();
         if ("openai".equals(lower)) {
             if ("responses".equalsIgnoreCase(apiType)) {
-                boolean enabled = section != null && section.getBoolean("reasoning-summary.enabled", true);
-                String level = section == null ? "auto" : section.getString("reasoning-summary.level", "auto");
-                Set<String> models = section == null ? Set.of() : new HashSet<>(section.getStringList("reasoning-summary.models"));
+                boolean enabled = section != null && section.getBoolean("responses.reasoning-summary.enabled", true);
+                String level = section == null ? "auto" : section.getString("responses.reasoning-summary.level", "auto");
+                Set<String> models = section == null ? Set.of() : new HashSet<>(section.getStringList("responses.reasoning-summary.supported-models"));
                 return new OpenAIResponsesAdapter(apiTimeoutSeconds, enabled, models, level);
-            } else {
+            } else if ("chat".equalsIgnoreCase(apiType)) {
                 return new OpenAIAdapter(apiTimeoutSeconds);
             }
+            throw new IllegalArgumentException("OpenAI adapter api-type must be responses or chat");
         } else if ("anthropic".equals(lower)) {
+            if (!"messages".equalsIgnoreCase(apiType)) throw new IllegalArgumentException("Anthropic adapter api-type must be messages");
             String apiVersion = section != null ? section.getString("api-version", "2023-06-01") : "2023-06-01";
             return new AnthropicAdapter(apiTimeoutSeconds, apiVersion);
         } else if ("gemini".equals(lower)) {
+            if (!"generate-content".equalsIgnoreCase(apiType)) throw new IllegalArgumentException("Gemini adapter api-type must be generate-content");
             return new GeminiAdapter(apiTimeoutSeconds);
         } else if ("deepseek".equals(lower)) {
-            return new DeepSeekAdapter(apiTimeoutSeconds);
-        } else {
+            if (!"chat".equalsIgnoreCase(apiType)) throw new IllegalArgumentException("DeepSeek adapter api-type must be chat");
             return new DeepSeekAdapter(apiTimeoutSeconds);
         }
+        throw new IllegalArgumentException("Unsupported AI adapter: " + providerName);
     }
 
     public void recreateHttpClient() {

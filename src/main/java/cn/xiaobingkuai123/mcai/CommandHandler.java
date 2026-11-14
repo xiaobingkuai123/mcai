@@ -26,6 +26,12 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             sender.sendMessage(plugin.languageManager.get("invalid-command"));
             return true;
         }
+        if (args.length > 0 && args[0].equalsIgnoreCase("public")) {
+            handlePublic(player, args);
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("help") && player.hasPermission("mcai.admin")) { showHelp(sender); return true; }
+        if (args.length == 0 && player.hasPermission("mcai.admin")) { openMainMenu(player); return true; }
         if (!player.hasPermission("mcai.use")) {
             player.sendMessage(plugin.languageManager.get("no-permission"));
             return true;
@@ -60,6 +66,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleConsoleCommand(CommandSender sender, String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("public")) { handlePublic(sender, args); return true; }
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) { showHelp(sender); return true; }
         String sub = args[0].toLowerCase();
         switch (sub) {
@@ -98,6 +105,32 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             default -> sender.sendMessage(plugin.languageManager.get("console-usage"));
         }
         return true;
+    }
+
+    private void handlePublic(CommandSender sender, String[] args) {
+        plugin.schedulerAdapter.runTask(sender, () -> {
+            if (args.length < 2) { sendPublicUsage(sender, plugin.languageManager::get); return; }
+            if (args[1].equalsIgnoreCase("chat")) {
+                if (sender instanceof Player p && (!p.hasPermission("mcai.use") || !p.hasPermission("mcai.public.use"))) {
+                    sender.sendMessage(plugin.languageManager.get("no-permission")); return;
+                }
+                if (args.length < 3) { sendPublicUsage(sender, plugin.languageManager::get); return; }
+                String question = String.join(" ", Arrays.copyOfRange(args, 2, args.length));
+                if (sender instanceof Player player) plugin.publicAiManager.submit(player, question);
+                else if (sender instanceof ConsoleCommandSender console) plugin.publicAiManager.submit(console, question);
+                return;
+            }
+            if (!(sender instanceof ConsoleCommandSender) && !sender.hasPermission("mcai.admin")) { sender.sendMessage(plugin.languageManager.get("no-permission")); return; }
+            if (args.length == 2 && args[1].equalsIgnoreCase("clear")) {
+                plugin.publicAiManager.clearHistory();
+                sender.sendMessage(plugin.languageManager.get("public-ai-cleared"));
+            } else if (args.length == 3 && args[1].equalsIgnoreCase("setname")) {
+                try {
+                    plugin.publicAiManager.setTrigger(args[2]);
+                    sender.sendMessage(plugin.languageManager.get("public-ai-setname-success", "name", plugin.getConfig().getString("ai.public.trigger")));
+                } catch (IllegalArgumentException e) { sender.sendMessage(plugin.languageManager.get("public-ai-setname-invalid")); }
+            } else sendPublicUsage(sender, plugin.languageManager::get);
+        }, null);
     }
 
     private void handleChat(Player player, String[] args, int idx, boolean pro) {
@@ -147,9 +180,20 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         economyManager.takePoints(player, target, amount);
     }
 
+    static boolean isPublicAdmin(CommandSender sender) {
+        return sender instanceof ConsoleCommandSender || sender.hasPermission("mcai.admin");
+    }
+
+    static void sendPublicUsage(CommandSender sender, java.util.function.Function<String, String> language) {
+        if (sender instanceof ConsoleCommandSender || (sender.hasPermission("mcai.use") && sender.hasPermission("mcai.public.use")))
+            sender.sendMessage(language.apply("public-ai-usage"));
+        if (isPublicAdmin(sender)) sender.sendMessage(language.apply("public-ai-admin-usage"));
+    }
+
     private void showHelp(CommandSender sender) {
         int freePoints = sender instanceof Player player ? economyManager.getRemainingPoints(player) : 10;
         sender.sendMessage(plugin.languageManager.get("help-header"));
+        sendPublicUsage(sender, plugin.languageManager::get);
         sender.sendMessage(plugin.languageManager.get("help-chat", "normal", String.valueOf(plugin.normalCostPoints)));
         sender.sendMessage(plugin.languageManager.get("help-chat-think", "normalthink", String.valueOf(plugin.normalThinkCostPoints)));
         sender.sendMessage(plugin.languageManager.get("help-pro-chat", "pro", String.valueOf(plugin.proCostPoints)));
@@ -157,10 +201,12 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         if (plugin.economyEnabled && plugin.getEconomy() != null) {
             sender.sendMessage(plugin.languageManager.get("help-buy", "price", plugin.getEconomy().format(plugin.costPerPoint)));
         }
-        sender.sendMessage(plugin.languageManager.get("help-give"));
-        sender.sendMessage(plugin.languageManager.get("help-take"));
+        if (isPublicAdmin(sender)) {
+            sender.sendMessage(plugin.languageManager.get("help-give"));
+            sender.sendMessage(plugin.languageManager.get("help-take"));
+        }
         sender.sendMessage(plugin.languageManager.get("help-clear"));
-        sender.sendMessage(plugin.languageManager.get("help-reload"));
+        if (isPublicAdmin(sender)) sender.sendMessage(plugin.languageManager.get("help-reload"));
         sender.sendMessage(plugin.languageManager.get("help-help"));
         String priceDisplay = plugin.economyEnabled && plugin.getEconomy() != null ? plugin.getEconomy().format(plugin.costPerPoint) : "N/A";
         sender.sendMessage(plugin.languageManager.get("help-points", "free", String.valueOf(freePoints), "price", priceDisplay));
@@ -196,6 +242,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             plugin.refreshConfigurationCache();
             plugin.recreateHttpClient();
             plugin.languageManager.reload();
+            plugin.publicAiManager.reloadConfiguration();
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning(plugin.languageManager.get("log-reload-failure", "error", e.getMessage()));
@@ -210,12 +257,18 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         List<String> suggestions = new ArrayList<>();
         if (args.length == 1) {
             String prefix = args[0].toLowerCase();
-            for (String s : new String[]{"chat", "pro", "buy", "give", "take", "clear", "reload", "help"}) {
+            for (String s : new String[]{"public", "chat", "pro", "buy", "give", "take", "clear", "reload", "help"}) {
+                if ((s.equals("give") || s.equals("take") || s.equals("reload")) && !isPublicAdmin(sender)) continue;
                 if (s.startsWith(prefix)) suggestions.add(s);
             }
         } else if (args.length == 2) {
             String firstArg = args[0].toLowerCase();
-            if (firstArg.equals("pro")) { if ("chat".startsWith(args[1].toLowerCase())) suggestions.add("chat"); }
+            if (firstArg.equals("public")) {
+                for (String sub : isPublicAdmin(sender) ? List.of("chat", "clear", "setname") : List.of("chat")) {
+                    if (sub.startsWith(args[1].toLowerCase())) suggestions.add(sub);
+                }
+            }
+            else if (firstArg.equals("pro")) { if ("chat".startsWith(args[1].toLowerCase())) suggestions.add("chat"); }
             else if (firstArg.equals("chat")) { if ("think".startsWith(args[1].toLowerCase())) suggestions.add("think"); }
             else if (firstArg.equals("buy")) { String p = args[1].toLowerCase(); if ("1".startsWith(p)) suggestions.add("1"); if ("5".startsWith(p)) suggestions.add("5"); if ("10".startsWith(p)) suggestions.add("10"); }
             else if (firstArg.equals("give") || firstArg.equals("take")) { String p = args[1].toLowerCase(); for (Player player : Bukkit.getOnlinePlayers()) if (player.getName().toLowerCase().startsWith(p)) suggestions.add(player.getName()); }

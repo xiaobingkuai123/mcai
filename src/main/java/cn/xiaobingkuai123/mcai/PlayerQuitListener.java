@@ -10,6 +10,8 @@ public class PlayerQuitListener implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
+        plugin.publicAiManager.onViewerQuit(event.getPlayer());
+        plugin.publicAiManager.onPlayerQuit(playerId);
 
         PlayerStreamOutput output = plugin.activeStreamOutputs.remove(playerId);
         if (output != null) {

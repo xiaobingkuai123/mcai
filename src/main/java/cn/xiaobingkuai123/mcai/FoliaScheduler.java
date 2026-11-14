@@ -46,6 +46,11 @@ public class FoliaScheduler implements SchedulerAdapter {
         }
     }
 
+    @Override
+    public void runGlobalTask(Runnable task) {
+        Bukkit.getGlobalRegionScheduler().run(plugin, ignored -> task.run());
+    }
+
     static Runnable once(Runnable action) {
         var called = new java.util.concurrent.atomic.AtomicBoolean();
         return () -> { if (called.compareAndSet(false, true) && action != null) action.run(); };

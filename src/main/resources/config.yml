@@ -1,100 +1,209 @@
-# Language filename under the plugin's lang/ directory, without the .yml extension (for example: zh_CN).
-# Default: zh_CN. If the selected file is missing or invalid, the plugin falls back to zh_CN.
+######################################################################
+#                             McAI 配置文件
+#
+# 这是一个 Minecraft AI 插件配置示例。
+# 项目地址：https://github.com/xiaobingkuai123/mcai
+#
+# 配置结构：
+#   ai.adapters -> 厂商连接、API 协议和厂商专属选项
+#   ai.personal -> 玩家私人 AI 的四种模式、提示词和私人会话设置
+#   ai.public   -> 服务器公共 AI 的独立配置
+#
+# 本版本不兼容旧配置结构。修改本文件后请完整填写新的 ai 区域。
+#
+# thinking.enabled 控制模型是否进行思考。
+# thinking.strength 控制思考强度：
+#   type: effort -> OpenAI、DeepSeek 等使用 low/medium/high
+#   type: budget -> Gemini 2.5、Anthropic 等使用 token 数量
+#   type: level  -> Gemini 3 等使用 minimal/low/medium/high
+#
+# thinking.display 控制玩家看到什么：
+#   none      -> 不显示思考内容
+#   summary   -> 只显示厂商提供的可读摘要
+#   reasoning -> 显示协议提供的思考内容；DeepSeek 的 reasoning_content 属于此类，
+#                不是厂商生成的摘要
+#
+# 三家 Provider 的协议不会混用：
+#   OpenAI 读取 Responses API 的 reasoning summary。
+#   DeepSeek 读取 Chat Completions 的 reasoning_content。
+#   Gemini 读取 GenerateContent parts 中 thought=true 的文本。
+######################################################################
+
 language: "zh_CN"
 
-api:
-  normal-provider: "deepseek"
-  pro-provider: "deepseek"
-  timeout-seconds: 120
-  request:
-    # Shared defaults. Adapters omit unsupported provider-specific fields.
-    temperature: 0.7
-    top-p: 1.0
-    max-retries: 1
-    streaming: true
+ai:
+  ####################################################################
+  #                          AI 适配器
+  #
+  # 这里只配置连接和协议。个人模式、公共 AI 使用哪个模型，分别在
+  # ai.personal.modes 和 ai.public 中配置。
+  ####################################################################
+  adapters:
+    # 所有适配器共用的 HTTP 和采样参数。具体 Provider 不支持的字段会被忽略。
+    request:
+      timeout-seconds: 120
+      max-retries: 1
+      temperature: 0.7
+      top-p: 1.0
+      streaming: true
+
+    openai:
+      api-type: "responses"
+      api-key: "sk-xxx"
+      base-url: "https://api.openai.com"
+      responses:
+        reasoning-summary:
+          enabled: true
+          level: "auto"
+          # 只有列出的模型才请求 OpenAI reasoning summary。
+          supported-models:
+            - "gpt-6.1-sol"
+
+    deepseek:
+      api-type: "chat"
+      api-key: "sk-xxx"
+      base-url: "https://api.deepseek.com"
+      # DeepSeek 的 reasoning_content 是原始思考内容，不是摘要。
+
+    gemini:
+      api-type: "generate-content"
+      api-key: "AIza..."
+      base-url: "https://generativelanguage.googleapis.com"
+      generate-content:
+        cached-content:
+          enabled: false
+
+    anthropic:
+      api-type: "messages"
+      api-key: "sk-ant-xxx"
+      base-url: "https://api.anthropic.com"
+      api-version: "2023-06-01"
+
+  ####################################################################
+  #                          私人 AI
+  #
+  # 每个模式都可以独立选择厂商、模型、思考强度和展示类型。
+  #
+  # normal           -> 普通模式
+  # normal-thinking  -> 普通思考模式
+  # advanced         -> 高级模式
+  # advanced-thinking-> 高级思考模式
+  ####################################################################
+  personal:
+    enabled: true
+    prompt:
+      system: >
+        你是 Minecraft 服务器中的私人 AI 助手。
+        请直接回答玩家问题，回答清晰、准确、简洁。
+        在能够完整解决问题的前提下，尽量控制在 50 字以内。
+        如果问题确实需要较长说明，再适当增加长度。
+
+    modes:
+      normal:
+        provider: "openai"
+        model: "gpt-4o-mini"
+        thinking:
+          enabled: false
+          display: "none"
+        output:
+          max-tokens: 4096
+
+      normal-thinking:
+        provider: "deepseek"
+        model: "deepseek-reasoner"
+        thinking:
+          enabled: true
+          strength:
+            type: "effort"
+            value: "high"
+          display: "reasoning"
+        output:
+          max-tokens: 64000
+
+      advanced:
+        provider: "gemini"
+        model: "gemini-2.5-flash"
+        thinking:
+          enabled: false
+          display: "none"
+        output:
+          max-tokens: 4096
+
+      advanced-thinking:
+        provider: "openai"
+        model: "gpt-6.1-sol"
+        thinking:
+          enabled: true
+          strength:
+            type: "effort"
+            value: "high"
+          display: "summary"
+        output:
+          max-tokens: 32768
+
+    history:
+      mode: "sliding"
+      max-rounds: 20
+      persistence:
+        enabled: true
+
+    streaming:
+      enabled: true
+      update-ticks: 4
+      preview-code-points: 48
+      reasoning-buffer-code-points: 96
+      bossbar-hold-ticks: 40
+      answer-delay-ticks: 20
+      # true 时允许思考内容在回答前进入私人聊天；display=none 时仍不会显示。
+      show-thinking-in-chat: true
+
+    console:
+      max-history: 30
+      log-to-console: false
+
+  ####################################################################
+  #                          公共 AI
+  #
+  # 公共 AI 使用独立共享历史、提示词、费用和展示设置，不继承私人 AI 模式。
+  ####################################################################
+  public:
+    enabled: true
+    trigger: "AI"
+    provider: "openai"
+    model: "gpt-6.1-sol"
+    cost-points: 1
+
+    prompt:
+      system: >
+        你是 Minecraft 服务器的公共 AI 助手。
+        你的回答会展示给服务器中的多个玩家。
+        请避免泄露玩家私人信息，回答清晰、简洁并遵守服务器规则。
+        在能够完整解决问题的前提下，尽量控制在 80 字以内。
+    context:
+      player-template: "{player}"
+
     thinking:
       enabled: true
-      # Token budget reserved for model reasoning. Default: 4096; minimum: 1024; no plugin-imposed upper limit (the provider/model may impose one).
-      budget: 4096
-    reasoning-effort: "medium"
-  deepseek:
-    key: "sk-xxx"
-    base-url: "https://api.deepseek.com"
-    api-type: "chat"
-    normal-model: "deepseek-v4.1-flash"
-    normal-think-model: "deepseek-v4-pro"
-    pro-model: "deepseek-v4.1-flash"
-    pro-think-model: "deepseek-v4-pro"
-    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-fast: 4096
-    # Maximum generated output tokens for thinking requests. Default: 64000; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-think: 64000
-  openai:
-    key: "sk-xxx"
-    base-url: "https://api.openai.com"
-    # Use responses for OpenAI reasoning models. Chat Completions gpt-4o is not a reasoning model.
-    api-type: "responses"
-    normal-model: "gpt-6.1-sol"
-    normal-think-model: "gpt-6.1-sol"
-    pro-model: "gpt-6.1-sol"
-    pro-think-model: "gpt-6.1-sol"
-    reasoning-summary:
-      enabled: true
-      level: "auto"
-      models:
-        - "gpt-6.1-sol"
-    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-fast: 4096
-    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-think: 32768
-  anthropic:
-    key: "sk-ant-xxx"
-    base-url: "https://api.anthropic.com"
-    api-type: "messages"
-    api-version: "2023-06-01"
-    normal-model: "claude-sonnet-4-20250514"
-    normal-think-model: "claude-sonnet-4-20250514"
-    pro-model: "claude-opus-4-20250514"
-    pro-think-model: "claude-opus-4-20250514"
-    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-fast: 4096
-    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-think: 32768
-  gemini:
-    key: "AIza..."
-    base-url: "https://generativelanguage.googleapis.com"
-    api-type: "gemini"
-    cached-content:
-      # Explicit Gemini Cached Content is optional; unsupported gateways fall back to inline history.
-      enabled: false
-    normal-model: "gemini-2.5-flash"
-    normal-think-model: "gemini-2.5-flash"
-    pro-model: "gemini-2.5-pro"
-    pro-think-model: "gemini-2.5-pro"
-    # Maximum generated output tokens for non-thinking requests. Default: 4096; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-fast: 4096
-    # Maximum generated output tokens for thinking requests. Default: 32768; minimum: 1; no plugin-imposed upper limit (the provider/model may impose one).
-    max-tokens-think: 32768
+      strength:
+        type: "effort"
+        value: "medium"
+      # OpenAI 使用 summary；DeepSeek 可使用 reasoning；关闭则使用 none。
+      display: "summary"
 
-chat:
-  system-prompt: "You are a helpful Minecraft server assistant. Answer briefly and clearly."
-  # Console history is independent of player permission groups.
-  console-max-history: 30
-  log-to-console: false
-  think-delay-ticks: 20
-  history:
-    # sliding retains the latest rounds; accumulate blocks new requests at the permission group's max-history.
-    mode: sliding
-    persistence:
+    output:
+      max-tokens: 32768
+
+    streaming:
       enabled: true
-  round-prompt:
-    enabled: true
-  streaming:
-    enabled: true
-    update-ticks: 4
-    window-chars: 48
-    show-reasoning-in-chat: true
-    bossbar-hold-ticks: 40
+      audience: "all"
+      buffer-code-points: 96
+      flush-interval-ms: 500
+
+    history:
+      mode: "sliding"
+      max-rounds: 20
+      persistence:
+        enabled: false
 
 points:
   normal-cost: 1
@@ -111,27 +220,21 @@ rate-limit:
 daily-limit:
   enabled: true
 
-# Permission groups share quota, question-length, and conversation-history limits.
-# Groups are checked in file order; the last matching permission group takes precedence.
 permissions:
   groups:
     default:
-      # The fallback group is used when no other configured permission matches.
       max-points: 10
       max-question-length: 200
-      # Maximum history rounds retained in sliding mode and allowed in accumulate mode.
       max-history: 5
     vip:
       permission: "mcai.group.vip"
       max-points: 50
       max-question-length: 500
-      # Maximum history rounds retained in sliding mode and allowed in accumulate mode.
       max-history: 10
     admin:
       permission: "mcai.group.admin"
       max-points: -1
       max-question-length: 0
-      # Maximum history rounds retained in sliding mode and allowed in accumulate mode.
       max-history: 20
 
 sounds:

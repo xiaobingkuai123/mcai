@@ -260,16 +260,15 @@ public class EconomyManager {
             return false;
         }
 
-        boolean isPro = mode.startsWith("pro");
-        String providerName = isPro ? plugin.proProviderName : plugin.normalProviderName;
-        var apiSection = plugin.getConfig().getConfigurationSection("api." + providerName);
-        if (apiSection == null) {
-            player.sendMessage(plugin.languageManager.get("log-provider-section-missing", "provider", providerName));
+        McAI.PersonalMode selected = plugin.personalModes.get(mode.startsWith("pro")
+                ? (mode.endsWith("_think") ? "advanced-thinking" : "advanced")
+                : (mode.endsWith("_think") ? "normal-thinking" : "normal"));
+        if (selected == null) {
+            player.sendMessage(plugin.languageManager.get("log-provider-section-missing", "provider", "personal mode"));
             return false;
         }
-        String apiKey = apiSection.getString("key", "");
-        if (apiKey == null || apiKey.isBlank() || apiKey.contains("xxx")) {
-            player.sendMessage(plugin.languageManager.get("no-api-key", "provider", providerName));
+        if (selected.apiKey().isBlank() || selected.apiKey().contains("xxx")) {
+            player.sendMessage(plugin.languageManager.get("no-api-key", "provider", selected.provider()));
             return false;
         }
 
@@ -287,7 +286,7 @@ public class EconomyManager {
         return true;
     }
 
-    private boolean checkRateLimit(Player player) {
+    boolean checkRateLimit(Player player) {
         if (!plugin.rateLimitEnabled) return true;
         return plugin.rateLimiter.acquire(player.getUniqueId(), plugin.ratePerMinute);
     }
@@ -309,15 +308,17 @@ public class EconomyManager {
     }
 
     public Charge consumePoints(Player player, String mode) {
+        return consumePoints(player, getCostForMode(mode));
+    }
+
+    public Charge consumePoints(Player player, int cost) {
+        if (cost < 0) throw new IllegalStateException("Negative points cost");
         if (!plugin.dailyLimitEnabled) return new Charge(null, "", 0);
         GroupConfig config = getGroupConfig(player);
         if (config.maxPoints < 0) return new Charge(null, "", 0);
 
         DailyUsageRecord record = dailyUsageRecords.computeIfAbsent(
                 player.getUniqueId(), k -> new DailyUsageRecord());
-        int cost = getCostForMode(mode);
-        if (cost < 0) throw new IllegalStateException("Negative points cost");
-
         Charge charge;
         synchronized (record) {
             record.resetIfNewDay();

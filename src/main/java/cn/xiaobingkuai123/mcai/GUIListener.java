@@ -28,15 +28,21 @@ public class GUIListener implements Listener {
         Material type = item.getType();
         plugin.schedulerAdapter.runTask(player, () -> {
             if (!player.isOnline() || player.getOpenInventory().getTopInventory() != top) return;
-            if (!player.hasPermission("mcai.use")) return;
-            if (holder instanceof MainMenuHolder) {
-                handleMainMenuClick(type, player);
-            } else if (holder instanceof ModeMenuHolder) {
-                handleModeMenuClick(type, player);
-            } else if (holder instanceof ClearConfirmHolder) {
-                handleClearConfirmClick(type, player);
-            } else {
-                handleRoundLimitClick(type, player);
+            if (holder instanceof ClearConfirmHolder confirm) {
+                boolean allowed = confirm.action == ClearConfirmHolder.Action.CLEAR_PERSONAL_HISTORY
+                        ? player.hasPermission("mcai.use") || player.hasPermission("mcai.admin") : player.hasPermission("mcai.admin");
+                if (allowed) handleClearConfirmClick(type, player, confirm);
+                return;
+            }
+            if (!player.hasPermission("mcai.use") && !player.hasPermission("mcai.admin")) return;
+            if (holder instanceof MainMenuHolder menu) {
+                if (menu.view == MainMenuHolder.View.HISTORY_CLEAR) {
+                    if (type == Material.PAPER) openConfirmation(plugin, player, ClearConfirmHolder.Action.CLEAR_PERSONAL_HISTORY, 0);
+                    else if (type == Material.BARRIER && player.hasPermission("mcai.admin")) openConfirmation(plugin, player, ClearConfirmHolder.Action.CLEAR_PUBLIC_HISTORY, 0);
+                } else if (type == Material.BARRIER || player.hasPermission("mcai.use")) handleMainMenuClick(type, player);
+            } else if (player.hasPermission("mcai.use")) {
+                if (holder instanceof ModeMenuHolder) handleModeMenuClick(type, player);
+                else handleRoundLimitClick(type, player);
             }
         });
     }
@@ -77,7 +83,11 @@ public class GUIListener implements Listener {
             }
         } else if (type == Material.BARRIER) {
             plugin.soundManager.playButtonClick(player);
-            openClearConfirmMenu(player);
+            Inventory inv = Bukkit.createInventory(new MainMenuHolder(MainMenuHolder.View.HISTORY_CLEAR), 9,
+                    plugin.languageManager.get("public-ai-clear-select"));
+            inv.setItem(3, button(plugin, Material.PAPER, "public-ai-clear-personal"));
+            if (player.hasPermission("mcai.admin")) inv.setItem(5, button(plugin, Material.BARRIER, "public-ai-clear-public"));
+            player.openInventory(inv);
         }
     }
 
@@ -105,11 +115,19 @@ public class GUIListener implements Listener {
         else if (type == Material.RED_WOOL) player.closeInventory();
     }
 
-    private void handleClearConfirmClick(Material type, Player player) {
+    private void handleClearConfirmClick(Material type, Player player, ClearConfirmHolder holder) {
+        if (holder.action == ClearConfirmHolder.Action.PUBLIC_RESET_DECISION) {
+            if (type == Material.GREEN_WOOL || type == Material.RED_WOOL) {
+                plugin.publicAiManager.resolveAdminDecision(player, holder.decisionId, type == Material.GREEN_WOOL);
+                player.closeInventory();
+            }
+            return;
+        }
         if (type == Material.GREEN_WOOL) {
             plugin.soundManager.playHistoryCleared(player);
-            plugin.clearPlayerHistory(player.getUniqueId());
-            player.sendMessage(plugin.languageManager.get("history-cleared"));
+            if (holder.action == ClearConfirmHolder.Action.CLEAR_PUBLIC_HISTORY) plugin.publicAiManager.clearHistory();
+            else plugin.clearPlayerHistory(player.getUniqueId());
+            player.sendMessage(plugin.languageManager.get(holder.action == ClearConfirmHolder.Action.CLEAR_PUBLIC_HISTORY ? "public-ai-cleared" : "history-cleared"));
             player.closeInventory();
         } else if (type == Material.RED_WOOL) {
             plugin.soundManager.playButtonClick(player);
@@ -125,30 +143,22 @@ public class GUIListener implements Listener {
         player.sendMessage(plugin.languageManager.get("chat-input-balance", "points", String.valueOf(points)));
     }
 
-    private void openClearConfirmMenu(Player player) {
-        LanguageManager lang = plugin.languageManager;
-        Inventory inv = Bukkit.createInventory(new ClearConfirmHolder(), 9, lang.get("clear-confirm-title"));
-        ItemStack glass = new ItemStack(Material.BLACK_STAINED_GLASS_PANE);
-        ItemMeta glassMeta = glass.getItemMeta();
-        glassMeta.setDisplayName(" ");
-        glass.setItemMeta(glassMeta);
-        inv.setItem(0, glass);
-        inv.setItem(8, glass);
-
-        ItemStack yes = new ItemStack(Material.GREEN_WOOL);
-        ItemMeta yesMeta = yes.getItemMeta();
-        yesMeta.setDisplayName(lang.get("clear-confirm-yes"));
-        yesMeta.setLore(List.of(lang.get("clear-confirm-lore-yes")));
-        yes.setItemMeta(yesMeta);
-        inv.setItem(3, yes);
-
-        ItemStack no = new ItemStack(Material.RED_WOOL);
-        ItemMeta noMeta = no.getItemMeta();
-        noMeta.setDisplayName(lang.get("clear-confirm-no"));
-        noMeta.setLore(List.of(lang.get("clear-confirm-lore-no")));
-        no.setItemMeta(noMeta);
-        inv.setItem(5, no);
-
+    static void openConfirmation(McAI plugin, Player player, ClearConfirmHolder.Action action, long decisionId) {
+        boolean decision = action == ClearConfirmHolder.Action.PUBLIC_RESET_DECISION;
+        String title = decision ? "public-ai-decision-title" : action == ClearConfirmHolder.Action.CLEAR_PUBLIC_HISTORY
+                ? "public-ai-clear-confirm" : "public-ai-personal-confirm";
+        Inventory inv = Bukkit.createInventory(new ClearConfirmHolder(action, decisionId), 9, plugin.languageManager.get(title));
+        inv.setItem(3, button(plugin, Material.GREEN_WOOL, decision ? "public-ai-accept" : "clear-confirm-yes"));
+        inv.setItem(5, button(plugin, Material.RED_WOOL, decision ? "public-ai-reject" : "clear-confirm-no"));
         player.openInventory(inv);
+    }
+
+    private static ItemStack button(McAI plugin, Material material, String key) {
+        ItemStack item = new ItemStack(material);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName(plugin.languageManager.get(key));
+        meta.setLore(List.of(plugin.languageManager.get("public-ai-gui-lore")));
+        item.setItemMeta(meta);
+        return item;
     }
 }

@@ -20,8 +20,8 @@ public final class ConversationHistory {
     }
 
     private final List<Round> rounds = new ArrayList<>();
-    private final Mode mode;
-    private final int maxRounds;
+    private Mode mode;
+    private int maxRounds;
     private boolean capped;
 
     public ConversationHistory(Mode mode, int maxRounds) {
@@ -35,8 +35,19 @@ public final class ConversationHistory {
         return mode != Mode.ACCUMULATE || (!capped && rounds.size() < maxRounds);
     }
     public synchronized int maxRounds() { return maxRounds; }
+    public synchronized Mode mode() { return mode; }
     public synchronized void markCapped() { capped = true; }
     public synchronized void reset() { rounds.clear(); capped = false; }
+    public synchronized void reconfigure(Mode newMode, int newMaxRounds) {
+        List<Message> snapshot = persistedMessages();
+        this.mode = Objects.requireNonNull(newMode);
+        this.maxRounds = Math.max(0, newMaxRounds);
+        rounds.clear();
+        capped = false;
+        ConversationHistory rebuilt = fromMessages(this.mode, this.maxRounds, snapshot);
+        rounds.addAll(rebuilt.rounds());
+        capped = rebuilt.capped();
+    }
     public synchronized void addRound(List<ApiAdapter.Message> messages) {
         List<Message> copy = new ArrayList<>();
         long now = System.currentTimeMillis();

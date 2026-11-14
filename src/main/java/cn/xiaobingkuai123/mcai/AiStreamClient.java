@@ -19,13 +19,26 @@ import java.util.function.Consumer;
 public final class AiStreamClient {
     private AiStreamClient() {}
 
+    /** The source protocol is retained even when the same UI displays these events. */
+    public enum EventType {
+        OPENAI_REASONING_SUMMARY, DEEPSEEK_REASONING, GEMINI_THOUGHT_SUMMARY,
+        ANTHROPIC_THINKING, RAW_REASONING, FINAL_ANSWER
+    }
+
     public static class Delta {
         private final String reasoning;
         private final String content;
+        private final EventType type;
         public Delta(String reasoning, String content) {
+            this(reasoning, content, reasoning != null && !reasoning.isEmpty()
+                    ? EventType.RAW_REASONING : EventType.FINAL_ANSWER);
+        }
+        public Delta(String reasoning, String content, EventType type) {
             this.reasoning = reasoning;
             this.content = content;
+            this.type = java.util.Objects.requireNonNull(type);
         }
+        public EventType type() { return type; }
         public String reasoning() { return reasoning; }
         public String content() { return content; }
     }
@@ -72,7 +85,7 @@ public final class AiStreamClient {
                     throw new ProtocolException("Provider did not return text/event-stream");
                 }
 
-                Accumulator accumulator = new Accumulator(listener);
+                Accumulator accumulator = new Accumulator(listener, adapter);
 
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(body, StandardCharsets.UTF_8))) {
@@ -325,6 +338,7 @@ public final class AiStreamClient {
                 String text = string(part, "text");
                 boolean thought = part.has("thought") && !part.get("thought").isJsonNull()
                         && part.get("thought").getAsBoolean();
+                accumulator.geminiParts.add(GeminiAdapter.messagePart(part));
                 accumulator.emit(thought ? text : "", thought ? "" : text);
             }
         }
@@ -371,7 +385,9 @@ public final class AiStreamClient {
             summaryParts.add(key); return key;
         }
         private final java.util.SortedMap<Integer, AnthropicBlock> anthropic = new java.util.TreeMap<>();
+        private final java.util.List<ApiAdapter.Message> geminiParts = new java.util.ArrayList<>();
         private java.util.List<ApiAdapter.Message> blocks() {
+            if (!geminiParts.isEmpty()) return java.util.List.copyOf(geminiParts);
             return anthropic.values().stream().map(b -> new ApiAdapter.Message("assistant", b.text.toString(),
                     b.type, b.signature.isEmpty() ? null : b.signature.toString())).toList();
         }
@@ -380,13 +396,22 @@ public final class AiStreamClient {
                     .map(b -> b.signature.toString()).findFirst().orElse(null);
         }
 
-        private Accumulator(Consumer<Delta> listener) { this.listener = listener; }
+        private final EventType reasoningType;
+        private Accumulator(Consumer<Delta> listener, ApiAdapter adapter) {
+            this.listener = listener;
+            reasoningType = adapter instanceof OpenAIResponsesAdapter ? EventType.OPENAI_REASONING_SUMMARY
+                    : adapter instanceof DeepSeekAdapter ? EventType.DEEPSEEK_REASONING
+                    : adapter instanceof GeminiAdapter ? EventType.GEMINI_THOUGHT_SUMMARY
+                    : adapter instanceof AnthropicAdapter ? EventType.ANTHROPIC_THINKING
+                    : EventType.RAW_REASONING;
+        }
 
         private void emit(String reasoningDelta, String contentDelta) {
             if (reasoningDelta.isEmpty() && contentDelta.isEmpty()) return;
             reasoning.append(reasoningDelta);
             content.append(contentDelta);
-            listener.accept(new Delta(reasoningDelta, contentDelta));
+            if (!reasoningDelta.isEmpty()) listener.accept(new Delta(reasoningDelta, "", reasoningType));
+            if (!contentDelta.isEmpty()) listener.accept(new Delta("", contentDelta, EventType.FINAL_ANSWER));
         }
     }
 }

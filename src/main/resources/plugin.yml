@@ -4,7 +4,7 @@ author: xiaobingkuai123
 main: cn.xiaobingkuai123.mcai.McAI
 api-version: '1.21'
 folia-supported: true
-softdepend: [Vault, floodgate]
+softdepend: [Vault, floodgate, PlaceholderAPI]
 libraries:
   - com.google.code.gson:gson:2.10.1
 commands:
@@ -13,6 +13,8 @@ commands:
     usage: "§c/ai help"
     aliases: [askai]
 permissions:
+  mcai.public.use:
+    default: true
   mcai.use:
     default: true
   mcai.admin:

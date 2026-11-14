@@ -24,7 +24,14 @@ public final class HistoryPersistence {
     }
 
     public ConversationHistory load(UUID id, ConversationHistory.Mode mode, int maxRounds) {
-        File file = fileFor(id);
+        return loadFile(fileFor(id), mode, maxRounds);
+    }
+
+    public ConversationHistory loadPublic(ConversationHistory.Mode mode, int maxRounds) {
+        return loadFile(new File(directory, "public-ai.yml"), mode, maxRounds);
+    }
+
+    private ConversationHistory loadFile(File file, ConversationHistory.Mode mode, int maxRounds) {
         if (!file.isFile()) return new ConversationHistory(mode, maxRounds);
         try {
             YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
@@ -67,13 +74,30 @@ public final class HistoryPersistence {
     }
 
     public void saveMessages(UUID id, List<ConversationHistory.Message> snapshot) throws IOException {
+        saveMessagesToFile(fileFor(id), snapshot, id);
+    }
+
+    public void savePublic(ConversationHistory history) throws IOException {
+        savePublicMessages(history.persistedMessages());
+    }
+
+    public void savePublicMessages(List<ConversationHistory.Message> snapshot) throws IOException {
+        saveMessagesToFile(new File(directory, "public-ai.yml"), snapshot, null);
+    }
+
+    public void deletePublic() {
+        try { Files.deleteIfExists(new File(directory, "public-ai.yml").toPath()); }
+        catch (IOException ignored) { }
+    }
+
+    private synchronized void saveMessagesToFile(File target, List<ConversationHistory.Message> snapshot, UUID id) throws IOException {
         if (!directory.exists() && !directory.mkdirs() && !directory.isDirectory()) {
             throw new IOException("history directory unavailable");
         }
 
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("version", VERSION);
-        yaml.set("uuid", id.toString());
+        if (id != null) yaml.set("uuid", id.toString());
         for (int i = 0; i < snapshot.size(); i++) {
             ConversationHistory.Message message = snapshot.get(i);
             String path = "messages." + i;
@@ -88,7 +112,6 @@ public final class HistoryPersistence {
             }
         }
 
-        File target = fileFor(id);
         File temporary = new File(target.getPath() + ".tmp");
         yaml.save(temporary);
         try {

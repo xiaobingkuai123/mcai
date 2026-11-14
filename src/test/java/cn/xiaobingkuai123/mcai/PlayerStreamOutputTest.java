@@ -17,6 +17,7 @@ class PlayerStreamOutputTest {
         public void runTask(CommandSender sender,Runnable task){immediate.offer(task);}
         public void runTaskLater(CommandSender sender,Runnable task,long ticks){delay=ticks;delayed.offer(task);}
         public void runAsync(Runnable task){throw new AssertionError("unexpected async scheduling");}
+        public void runGlobalTask(Runnable task){immediate.offer(task);}
         void run(){Runnable task;while((task=immediate.poll())!=null)task.run();}
         void tick(){Runnable task=delayed.poll();if(task!=null)task.run();}
     }

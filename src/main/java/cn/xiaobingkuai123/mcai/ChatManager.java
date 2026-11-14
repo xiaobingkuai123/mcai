@@ -37,7 +37,8 @@ public class ChatManager {
             return;
         }
 
-        boolean streaming = plugin.apiStreaming && plugin.getConfig().getBoolean("chat.streaming.enabled", true);
+        boolean streaming = plugin.getConfig().getBoolean("ai.adapters.request.streaming", true)
+                && plugin.getConfig().getBoolean("ai.personal.streaming.enabled", true);
         boolean isThinking = mode.endsWith("_think");
 
         if (!economyManager.canStartConversationRound(player)) {
@@ -93,7 +94,7 @@ public class ChatManager {
                 ConversationHistory memory = conversationMemory(playerId, maxHist);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
-                if (isAnthropicMode(mode) && !response.contentBlocks().isEmpty()) {
+                if ((isAnthropicMode(mode) || isGeminiMode(mode)) && !response.contentBlocks().isEmpty()) {
                     completedRound.addAll(response.contentBlocks());
                 } else {
                     if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
@@ -114,7 +115,7 @@ public class ChatManager {
                 }
 
                 if (plugin.logToConsole) {
-                    if (reasoning != null && !reasoning.isBlank()) {
+                    if (displaysThinking(mode) && reasoning != null && !reasoning.isBlank()) {
                         plugin.getLogger().info("[" + plugin.languageManager.get("log-console-reasoning")
                                 + "] -> " + playerName + ": " + redactLog(ChatColor.stripColor(reasoning)));
                     }
@@ -123,13 +124,13 @@ public class ChatManager {
                 }
 
                 if (output != null) {
-                    output.finish(displayAnswer, reasoning);
+                    output.finish(displayAnswer, displaysThinking(mode) ? reasoning : null);
                 } else {
                     final String finalReasoning = reasoning;
                     final String finalAnswer = displayAnswer;
                     plugin.schedulerAdapter.runTask(player, () -> {
                         if (!player.isOnline()) return;
-                        if (isThinking && finalReasoning != null && !finalReasoning.isBlank()) {
+                        if (isThinking && displaysThinking(mode) && finalReasoning != null && !finalReasoning.isBlank()) {
                             plugin.soundManager.playReasoningDone(player);
                             PlayerStreamOutput.sendText(plugin, player,
                                     "reasoning-summary-label", finalReasoning, ChatColor.GRAY);
@@ -201,7 +202,7 @@ public class ChatManager {
         if (text == null) return "";
         String safe = text;
         for (String provider : List.of("deepseek", "openai", "anthropic", "gemini")) {
-            String key = plugin.getConfig().getString("api." + provider + ".key", "");
+            String key = plugin.getConfig().getString("ai.adapters." + provider + ".api-key", "");
             if (key != null && !key.isBlank()) safe = safe.replace(key, "[REDACTED]");
         }
         return redactCredentials(safe);
@@ -263,7 +264,7 @@ public class ChatManager {
                 }
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
-                if (isAnthropicMode(mode) && !response.contentBlocks().isEmpty()) {
+                if ((isAnthropicMode(mode) || isGeminiMode(mode)) && !response.contentBlocks().isEmpty()) {
                     completedRound.addAll(response.contentBlocks());
                 } else {
                     if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
@@ -280,7 +281,7 @@ public class ChatManager {
                     try { plugin.historyPersistence.save(McAI.CONSOLE_UUID, memory); }
                     catch (Exception e) { plugin.getLogger().warning("Unable to save console conversation history"); }
                 }
-                if (plugin.logToConsole && response.reasoning() != null && !response.reasoning().isEmpty() && isThinking) {
+                if (plugin.logToConsole && displaysThinking(mode) && response.reasoning() != null && !response.reasoning().isEmpty() && isThinking) {
                     plugin.getLogger().info("[" + plugin.languageManager.get("log-console-reasoning")
                             + "] \n" + redactLog(ChatColor.stripColor(response.reasoning())));
                 }
@@ -296,9 +297,21 @@ public class ChatManager {
         });
     }
 
-    private boolean isAnthropicMode(String mode) {
-        String provider = mode.startsWith("pro") ? plugin.proProviderName : plugin.normalProviderName;
-        return "anthropic".equalsIgnoreCase(provider);
+    private McAI.PersonalMode personalMode(String mode) {
+        boolean pro = mode.startsWith("pro");
+        boolean thinking = mode.endsWith("_think");
+        String key = pro ? (thinking ? "advanced-thinking" : "advanced")
+                : (thinking ? "normal-thinking" : "normal");
+        McAI.PersonalMode selected = plugin.personalModes.get(key);
+        if (selected == null) throw new IllegalStateException("Missing personal mode: " + key);
+        return selected;
+    }
+
+    private boolean isGeminiMode(String mode) { return personalMode(mode).adapter() instanceof cn.xiaobingkuai123.mcai.adapter.GeminiAdapter; }
+    private boolean isAnthropicMode(String mode) { return "anthropic".equalsIgnoreCase(personalMode(mode).provider()); }
+
+    private boolean displaysThinking(String mode) {
+        return !"none".equals(personalMode(mode).display());
     }
 
     ConversationHistory conversationMemory(UUID userId, int maxRounds) {
@@ -314,55 +327,61 @@ public class ChatManager {
             String mode, int effectiveHistory, Consumer<AiStreamClient.Delta> streamListener,
             java.util.function.BooleanSupplier active) throws Exception {
         boolean isThinking = mode.endsWith("_think");
-        boolean isPro = mode.startsWith("pro");
-
-        ApiAdapter adapter = isPro ? plugin.proApiAdapter : plugin.normalApiAdapter;
+        McAI.PersonalMode configured = personalMode(mode);
         ConversationHistory memory = conversationMemory(userId, effectiveHistory);
-        String providerName = isPro ? plugin.proProviderName : plugin.normalProviderName;
+        ApiRequestProfile profile = new ApiRequestProfile(configured.provider(), configured.adapter(),
+                configured.apiKey(), configured.baseUrl(), configured.model(), configured.maxTokens(),
+                plugin.getConfig().getString("ai.personal.prompt.system", ""), configured.thinking(),
+                configured.strengthType(), configured.thinkingBudget(), configured.strengthValue(),
+                plugin.getConfig().getDouble("ai.adapters.request.temperature", 0.7),
+                plugin.getConfig().getDouble("ai.adapters.request.top-p", 1.0),
+                plugin.getConfig().getInt("ai.adapters.request.timeout-seconds", 120),
+                plugin.getConfig().getInt("ai.adapters.request.max-retries", 1),
+                plugin.getConfig().getBoolean("ai.adapters.request.streaming", true)
+                        && plugin.getConfig().getBoolean("ai.personal.streaming.enabled", true),
+                plugin.getConfig().getBoolean("ai.adapters.gemini.generate-content.cached-content.enabled", false),
+                configured.thinking() && "summary".equals(configured.display()), configured.display());
+        Consumer<AiStreamClient.Delta> filtered = streamListener == null ? null : delta -> {
+            if (delta.type() == AiStreamClient.EventType.FINAL_ANSWER || displaysThinking(mode)
+                    && ("summary".equals(configured.display()) && delta.type() == AiStreamClient.EventType.OPENAI_REASONING_SUMMARY
+                    || "summary".equals(configured.display()) && delta.type() == AiStreamClient.EventType.GEMINI_THOUGHT_SUMMARY
+                    || "reasoning".equals(configured.display()) && delta.type() == AiStreamClient.EventType.DEEPSEEK_REASONING
+                    || "reasoning".equals(configured.display()) && delta.type() == AiStreamClient.EventType.ANTHROPIC_THINKING))
+                streamListener.accept(delta);
+        };
+        return callApi(profile, memory, question, filtered, active);
+    }
 
-        var apiSection = plugin.getConfig().getConfigurationSection("api." + providerName);
-        if (apiSection == null) {
-            throw new IllegalStateException(
-                    plugin.languageManager.get("log-provider-section-missing", "provider", providerName));
-        }
+    /** Immutable session-specific settings; transport/retry/sampling settings remain shared. */
+    record ApiRequestProfile(String providerName, ApiAdapter adapter, String apiKey, String baseUrl,
+            String model, int maxTokens, String systemPrompt, boolean thinkingEnabled, String strengthType,
+            int thinkingBudget, String reasoningEffort, double temperature, double topP,
+            int timeoutSeconds, int maxRetries, boolean streamingEnabled,
+            boolean geminiCacheEnabled, boolean includeThoughts, String display) {}
 
-        String apiKey = apiSection.getString("key", "");
-        String apiBaseUrl = apiSection.getString("base-url", "");
-        String normalModel = apiSection.getString("normal-model", "");
-        String normalThinkModel = apiSection.getString("normal-think-model", normalModel);
-        String proModel = apiSection.getString("pro-model", normalModel);
-        String proThinkModel = apiSection.getString("pro-think-model", proModel);
-        int maxTokensFast = TokenBudget.outputTokens(
-                apiSection.getInt("max-tokens-fast", 4096));
-        int maxTokensThink = TokenBudget.outputTokens(
-                apiSection.getInt("max-tokens-think", 32768));
-
-        String model = isPro
-                ? (isThinking ? proThinkModel : proModel)
-                : (isThinking ? normalThinkModel : normalModel);
-        int maxTokens = isThinking ? maxTokensThink : maxTokensFast;
-
-        if (apiKey == null || apiKey.isBlank() || apiKey.contains("xxx")) {
-            throw new IllegalStateException(
-                    plugin.languageManager.get("no-api-key", "provider", providerName));
-        }
-
+    ApiAdapter.AdapterResponse callApi(ApiRequestProfile profile, ConversationHistory memory,
+            String question, Consumer<AiStreamClient.Delta> streamListener,
+            java.util.function.BooleanSupplier active) throws Exception {
+        ApiAdapter adapter = profile.adapter();
+        String apiBaseUrl = profile.baseUrl();
+        String apiKey = profile.apiKey();
+        String model = profile.model();
         List<ApiAdapter.Message> apiMessages = new ArrayList<>();
-        apiMessages.add(new ApiAdapter.Message("system", plugin.systemPrompt));
+        apiMessages.add(new ApiAdapter.Message("system", profile.systemPrompt()));
 
         apiMessages.addAll(memory.promptMessages());
         apiMessages.add(new ApiAdapter.Message("user", question));
 
         String cachedContent = null;
-        if (plugin.geminiCachedContentEnabled && adapter instanceof cn.xiaobingkuai123.mcai.adapter.GeminiAdapter
+        if (profile.geminiCacheEnabled() && adapter instanceof cn.xiaobingkuai123.mcai.adapter.GeminiAdapter
                 && plugin.geminiCachedContentManager != null && apiMessages.size() > 1) {
             cachedContent = plugin.geminiCachedContentManager.getOrCreate(apiBaseUrl, apiKey, model,
                     apiMessages.subList(0, apiMessages.size() - 1));
         }
-        ApiRequestOptions options = new ApiRequestOptions(plugin.apiTemperature, plugin.apiTopP, maxTokens,
-                plugin.apiTimeoutSeconds, plugin.apiMaxRetries,
-                streamListener != null && plugin.apiStreaming && plugin.getConfig().getBoolean("chat.streaming.enabled", true),
-                isThinking && plugin.thinkingEnabled, plugin.thinkingBudget, plugin.reasoningEffort, cachedContent);
+        ApiRequestOptions options = new ApiRequestOptions(profile.temperature(), profile.topP(), profile.maxTokens(),
+                profile.timeoutSeconds(), profile.maxRetries(),
+                streamListener != null && profile.streamingEnabled(),
+                profile.thinkingEnabled(), profile.thinkingBudget(), profile.reasoningEffort(), cachedContent, profile.includeThoughts());
         java.net.http.HttpClient client = plugin.getHttpClient();
         if (client == null) throw new CancellationException("Plugin is shutting down");
         var emitted = new java.util.concurrent.atomic.AtomicBoolean();
@@ -370,7 +389,7 @@ public class ChatManager {
         GeminiCachedContentManager.CachedOperation<ApiAdapter.AdapterResponse> operation = resource -> {
             ApiRequestOptions attempt = new ApiRequestOptions(options.temperature(), options.topP(), options.maxTokens(),
                     options.timeoutSeconds(), options.maxRetries(), options.streaming(), options.thinkingEnabled(),
-                    options.thinkingBudget(), options.reasoningEffort(), resource);
+                    options.thinkingBudget(), options.reasoningEffort(), resource, options.includeThoughts());
             HttpRequest request = adapter.buildRequest(apiBaseUrl, apiKey, model, apiMessages, attempt);
             return executeRequest(client, adapter, request, attempt, observed, active);
         };

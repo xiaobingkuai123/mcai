@@ -1,18 +1,25 @@
 package cn.xiaobingkuai123.mcai;
 import org.bukkit.entity.Player;
 import org.bukkit.event.*;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
+import io.papermc.paper.event.player.AsyncChatEvent;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 public class ChatInputListener implements Listener {
     private final McAI plugin;
     public ChatInputListener(McAI plugin) { this.plugin = plugin; }
 
     @EventHandler
-    public void onPlayerChat(AsyncPlayerChatEvent event) {
+    public void onPlayerChat(AsyncChatEvent event) {
         Player player = event.getPlayer();
-        if (!plugin.waitingInputType.containsKey(player.getUniqueId())) return;
+        String message = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
+        if (!plugin.waitingInputType.containsKey(player.getUniqueId())) {
+            String question = plugin.publicAiManager.parseTrigger(message);
+            if (question == null) return;
+            event.setCancelled(true);
+            plugin.publicAiManager.submit(player, question);
+            return;
+        }
         event.setCancelled(true);
-        String message = event.getMessage().trim();
 
         plugin.schedulerAdapter.runTask(player, () -> {
             if (!player.isOnline()) return;

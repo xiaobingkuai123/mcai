@@ -9,6 +9,11 @@ public class BukkitScheduler implements SchedulerAdapter {
 
     @Override
     public void runTask(CommandSender sender, Runnable task) {
+        runTask(sender, task, null);
+    }
+
+    @Override
+    public void runGlobalTask(Runnable task) {
         Bukkit.getScheduler().runTask(plugin, task);
     }
 

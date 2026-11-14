@@ -39,4 +39,28 @@ class GeminiCachedContentManagerTest {
     @Test void closePreventsFurtherCreation() {
         var manager=new GeminiCachedContentManager(null,1);manager.close();assertNull(manager.getOrCreate("http://localhost","key","m",List.of(new ApiAdapter.Message("system","s"))));assertEquals(0,manager.size());
     }
+
+    @Test void cachedGeminiHistoryPreservesThoughtPartsAndOpaqueSignatureAttachment() throws Exception {
+        AtomicReference<String> captured = new AtomicReference<>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            captured.set(new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            byte[] bytes = "{\"name\":\"cachedContents/signed\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var out = exchange.getResponseBody()) { out.write(bytes); }
+        });
+        server.start();
+        try (var client = HttpClient.newHttpClient(); var manager = new GeminiCachedContentManager(client, 5)) {
+            var prefix = List.of(new ApiAdapter.Message("user", "q"),
+                    new ApiAdapter.Message("assistant", "summary", "gemini_thought", null),
+                    new ApiAdapter.Message("assistant", "answer", "gemini_text", "opaque"));
+            assertEquals("cachedContents/signed", manager.getOrCreate("http://127.0.0.1:" + server.getAddress().getPort(), "key", "m", prefix));
+            var json = com.google.gson.JsonParser.parseString(captured.get()).getAsJsonObject();
+            var parts = json.getAsJsonArray("contents").get(1).getAsJsonObject().getAsJsonArray("parts");
+            assertEquals(2, parts.size());
+            assertTrue(parts.get(0).getAsJsonObject().get("thought").getAsBoolean());
+            assertEquals("opaque", parts.get(1).getAsJsonObject().get("thoughtSignature").getAsString());
+            assertEquals("answer", parts.get(1).getAsJsonObject().get("text").getAsString());
+        } finally { server.stop(0); }
+    }
 }

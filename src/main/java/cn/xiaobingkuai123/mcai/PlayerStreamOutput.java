@@ -28,10 +28,10 @@ public final class PlayerStreamOutput {
     public PlayerStreamOutput(McAI plugin, Player player) {
         this(plugin, player, plugin.schedulerAdapter, plugin::isEnabled, plugin.languageManager::get,
                 System::nanoTime, () -> plugin.soundManager.playAnswer(player), plugin.getLogger(),
-                plugin.getConfig().getLong("chat.streaming.update-ticks", 4),
-                plugin.getConfig().getInt("chat.streaming.window-chars", 48),
-                plugin.getConfig().getBoolean("chat.streaming.show-reasoning-in-chat", true),
-                plugin.getConfig().getLong("chat.streaming.bossbar-hold-ticks", 40));
+                plugin.getConfig().getLong("ai.personal.streaming.update-ticks", 4),
+                plugin.getConfig().getInt("ai.personal.streaming.preview-code-points", 48),
+                plugin.getConfig().getBoolean("ai.personal.streaming.show-thinking-in-chat", true),
+                plugin.getConfig().getLong("ai.personal.streaming.bossbar-hold-ticks", 40));
     }
 
     // Same output path with deterministic scheduler/clock dependencies for acceptance tests.

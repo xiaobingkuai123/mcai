@@ -9,6 +9,24 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class HistoryPersistenceTest {
     @TempDir Path directory;
+    @Test void publicFileIsIndependentAndRetainsProviderBlocks() throws Exception {
+        var persistence = new HistoryPersistence(directory.toFile());
+        var history = new ConversationHistory(ConversationHistory.Mode.ACCUMULATE, 1);
+        history.addRound(List.of(new cn.xiaobingkuai123.mcai.adapter.ApiAdapter.Message("user", "public"),
+                new cn.xiaobingkuai123.mcai.adapter.ApiAdapter.Message("assistant", "summary", "thinking", "signature"),
+                new cn.xiaobingkuai123.mcai.adapter.ApiAdapter.Message("assistant", "answer")));
+        persistence.savePublic(history);
+        UUID id = UUID.randomUUID();
+        assertEquals(0, persistence.load(id, ConversationHistory.Mode.SLIDING, 1).roundCount());
+        var loaded = persistence.loadPublic(ConversationHistory.Mode.ACCUMULATE, 1);
+        assertTrue(loaded.capped());
+        assertEquals("signature", loaded.persistedMessages().get(1).signature());
+        assertTrue(java.nio.file.Files.isRegularFile(directory.resolve("history/public-ai.yml")));
+        persistence.save(id, history);
+        persistence.deletePublic();
+        assertEquals(0, persistence.loadPublic(ConversationHistory.Mode.SLIDING, 1).roundCount());
+        assertEquals(1, persistence.load(id, ConversationHistory.Mode.SLIDING, 1).roundCount());
+    }
     @Test void messageIndicesAreNumericAndMalformedAliasesAreIgnored() throws Exception {
         UUID id = UUID.randomUUID();
         Path historyDir = java.nio.file.Files.createDirectories(directory.resolve("history"));

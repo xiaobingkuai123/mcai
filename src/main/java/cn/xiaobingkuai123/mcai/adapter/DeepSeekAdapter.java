@@ -15,6 +15,9 @@ public class DeepSeekAdapter implements ApiAdapter {
         JsonObject thinking = new JsonObject();
         thinking.addProperty("type", o.thinkingEnabled() ? "enabled" : "disabled");
         b.add("thinking", thinking);
+        if (o.thinkingEnabled() && o.reasoningEffort() != null && !o.reasoningEffort().isBlank()) {
+            b.addProperty("reasoning_effort", o.reasoningEffort());
+        }
         if (!o.thinkingEnabled()) { b.addProperty("temperature", o.temperature()); b.addProperty("top_p", o.topP()); }
         if (o.streaming()) { JsonObject usage = new JsonObject(); usage.addProperty("include_usage", true); b.add("stream_options", usage); }
         return HttpRequest.newBuilder().uri(URI.create(ApiUrls.v1(baseUrl, "/chat/completions"))).header("Content-Type", "application/json").header("Authorization", "Bearer " + key).timeout(Duration.ofSeconds(o.timeoutSeconds())).POST(HttpRequest.BodyPublishers.ofString(b.toString())).build();
