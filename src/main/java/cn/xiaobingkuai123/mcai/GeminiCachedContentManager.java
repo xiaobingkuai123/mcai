@@ -95,10 +95,28 @@ public final class GeminiCachedContentManager implements AutoCloseable {
     }
     private boolean expired(Entry entry) { return clock.getAsLong() - entry.created() >= entry.lifetime(); }
     void cleanup() {
-        entries.forEach((key, future) -> { Entry entry = future.getNow(null); if (future.isDone() && (entry == null || expired(entry))) remove(key, future); });
+        List<String> keys = new ArrayList<>(entries.keySet());
+        for (String key : keys) {
+            CompletableFuture<Entry> future = entries.get(key);
+            if (future != null) {
+                Entry entry = future.getNow(null);
+                if (future.isDone() && (entry == null || expired(entry))) {
+                    remove(key, future);
+                }
+            }
+        }
     }
     public void invalidate(String resource) {
-        entries.forEach((key, future) -> { Entry entry = future.getNow(null); if (entry != null && entry.resource().equals(resource)) remove(key, future); });
+        List<String> keys = new ArrayList<>(entries.keySet());
+        for (String key : keys) {
+            CompletableFuture<Entry> future = entries.get(key);
+            if (future != null) {
+                Entry entry = future.getNow(null);
+                if (entry != null && entry.resource().equals(resource)) {
+                    remove(key, future);
+                }
+            }
+        }
     }
     private void remove(String key, CompletableFuture<Entry> future) { if (entries.remove(key, future)) capacity.release(); }
     private void clear() { entries.forEach(this::remove); }

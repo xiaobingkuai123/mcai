@@ -107,7 +107,15 @@ public final class AiStreamClient {
                 timeoutTask.cancel(false);
             }
         } finally {
-            watchdog.shutdownNow();
+            watchdog.shutdown();
+            try {
+                if (!watchdog.awaitTermination(1, TimeUnit.SECONDS)) {
+                    watchdog.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                watchdog.shutdownNow();
+            }
         }
     }
 

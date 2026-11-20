@@ -40,8 +40,11 @@ public class EconomyManager {
 
         synchronized PurchaseReservation reservePurchase(int amount, int dailyLimit) {
             resetIfNewDay();
+            if (amount <= 0) {
+                return new PurchaseReservation(PurchaseStatus.INVALID_AMOUNT, 0);
+            }
             long total = (long) pointsBought + pendingPurchases;
-            if (amount <= 0 || total + amount > Integer.MAX_VALUE) {
+            if (total > Integer.MAX_VALUE - amount) {
                 return new PurchaseReservation(PurchaseStatus.INVALID_AMOUNT, 0);
             }
             if (dailyLimit >= 0 && total + amount > dailyLimit) {

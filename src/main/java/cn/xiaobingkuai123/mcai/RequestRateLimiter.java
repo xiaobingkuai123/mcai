@@ -42,9 +42,12 @@ final class RequestRateLimiter implements AutoCloseable {
     }
     void cleanup() {
         long now = clock.getAsLong();
-        windows.forEach((id, ignored) -> windows.computeIfPresent(id, (key, queue) -> {
-            prune(queue, now); return queue.isEmpty() ? null : queue;
-        }));
+        List<UUID> keys = new ArrayList<>(windows.keySet());
+        for (UUID id : keys) {
+            windows.computeIfPresent(id, (key, queue) -> {
+                prune(queue, now); return queue.isEmpty() ? null : queue;
+            });
+        }
     }
     int trackedPlayers() { return windows.size(); }
     void remove(UUID id) { windows.remove(id); }

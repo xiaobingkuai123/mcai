@@ -38,6 +38,8 @@ public class LanguageManager {
         FileConfiguration fallback = loadLanguageFile(DEFAULT_LANGUAGE);
         if (fallback != null) {
             loadedConfigs.put(DEFAULT_LANGUAGE, fallback);
+        } else {
+            plugin.getLogger().severe("Critical: Unable to load default language file '" + DEFAULT_LANGUAGE + ".yml'");
         }
 
         FileConfiguration selected = requestedLanguage.equals(DEFAULT_LANGUAGE)
@@ -50,6 +52,8 @@ public class LanguageManager {
         }
         if (selected != null) {
             loadedConfigs.put(requestedLanguage, selected);
+        } else if (fallback != null) {
+            loadedConfigs.put(requestedLanguage, fallback);
         }
 
         languageConfigs = Map.copyOf(loadedConfigs);
