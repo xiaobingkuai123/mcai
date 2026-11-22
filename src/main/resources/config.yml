@@ -1,103 +1,111 @@
-######################################################################
-#                             McAI 配置文件
+# --------------------------------
+# McAI 配置文件
 #
-# 这是一个 Minecraft AI 插件配置示例。
-# 项目地址：https://github.com/xiaobingkuai123/mcai
+# 为 Minecraft 服务器提供私人 AI 与公共 AI 对话，支持 Bukkit 和 Folia 调度。
+# GitHub: https://github.com/xiaobingkuai123/mcai
 #
-# 配置结构：
-#   ai.adapters -> 厂商连接、API 协议和厂商专属选项
-#   ai.personal -> 玩家私人 AI 的四种模式、提示词和私人会话设置
-#   ai.public   -> 服务器公共 AI 的独立配置
-#
-# 本版本不兼容旧配置结构。修改本文件后请完整填写新的 ai 区域。
-#
-# thinking.enabled 控制模型是否进行思考。
-# thinking.strength 控制思考强度：
-#   type: effort -> OpenAI、DeepSeek 等使用 low/medium/high
-#   type: budget -> Gemini 2.5、Anthropic 等使用 token 数量
-#   type: level  -> Gemini 3 等使用 minimal/low/medium/high
-#
-# thinking.display 控制玩家看到什么：
-#   none      -> 不显示思考内容
-#   summary   -> 只显示厂商提供的可读摘要
-#   reasoning -> 显示协议提供的思考内容；DeepSeek 的 reasoning_content 属于此类，
-#                不是厂商生成的摘要
-#
-# 三家 Provider 的协议不会混用：
-#   OpenAI 读取 Responses API 的 reasoning summary。
-#   DeepSeek 读取 Chat Completions 的 reasoning_content。
-#   Gemini 读取 GenerateContent parts 中 thought=true 的文本。
-######################################################################
+# 使用前请填写所选厂商的 API Key，并确认模型与 API 协议匹配。
+# ai.adapters 配置连接；ai.personal 和 ai.public 分别配置私人、公共会话。
+# Base URL 填写接口根地址，不要填写完整的聊天请求地址。
+# 修改后使用 /ai reload 重载；配置校验失败时保留上一次有效配置。
+# --------------------------------
 
+# 界面与提示消息的语言。可选 zh_CN 或 en_US；缓存统计日志固定使用中英双语。
 language: "zh_CN"
 
+# AI 连接与会话设置
 ai:
-  ####################################################################
-  #                          AI 适配器
-  #
-  # 这里只配置连接和协议。个人模式、公共 AI 使用哪个模型，分别在
-  # ai.personal.modes 和 ai.public 中配置。
-  ####################################################################
+  # 厂商连接设置。模式中的 provider 必须对应下方的厂商名称。
   adapters:
-    # 所有适配器共用的 HTTP 和采样参数。具体 Provider 不支持的字段会被忽略。
+    # 所有厂商共用的请求设置。采样参数是否发送取决于协议、模型和思考模式。
     request:
+      # 单次请求超时，单位：秒。流式请求也受此限制。
       timeout-seconds: 120
+      # 可重试错误的最大重试次数；0 表示不重试。已输出增量的请求不会重放。
       max-retries: 1
+      # 采样温度。仅在对应接口支持时发送；数值范围以厂商契约为准。
       temperature: 0.7
+      # 核采样参数。仅在对应接口支持时发送，思考模型可能不接受此参数。
       top-p: 1.0
+      # 流式请求总开关。还需开启对应私人或公共会话的 streaming.enabled。
       streaming: true
+      # 是否在控制台输出中英双语缓存统计，包含命中与未命中 Token。
+      # 关闭只隐藏日志，不会关闭缓存，也不会影响 Token Usage 统计。
+      log-cache-usage: true
 
+    # OpenAI：Responses API 或 Chat Completions。
     openai:
+      # responses 使用 Responses API；chat 使用 Chat Completions。
       api-type: "responses"
+      # 此厂商的 API Key。请替换占位值，不要公开包含真实密钥的配置文件。
       api-key: "sk-xxx"
+      # 可填写官方根地址或兼容网关；/v1 前缀可省略，插件会按协议补齐。
       base-url: "https://api.openai.com"
       responses:
+        # 仅用于 Responses API 的官方思考摘要，不适用于 Chat Completions。
         reasoning-summary:
+          # 是否为下方允许列表中的模型请求思考摘要。
           enabled: true
+          # 摘要级别：auto、concise 或 detailed。仍需模型支持。
           level: "auto"
-          # 只有列出的模型才请求 OpenAI reasoning summary。
+          # 精确匹配模型名称；只有列出的模型会收到 reasoning.summary 参数。
           supported-models:
             - "gpt-6.1-sol"
 
+    # DeepSeek：使用 Chat Completions，通过 thinking.enabled 切换思考。
     deepseek:
+      # DeepSeek 使用 chat 协议。
       api-type: "chat"
+      # DeepSeek 官方或兼容网关的 API Key。
       api-key: "sk-xxx"
+      # 官方裸域名与 /v1 两种写法均可使用；代理的路径前缀会保留。
+      # 插件仅移除尾部斜杠，再拼接 /chat/completions。
       base-url: "https://api.deepseek.com"
-      # DeepSeek 的 reasoning_content 是原始思考内容，不是摘要。
 
+    # Gemini：使用 Developer API 的原生 GenerateContent 协议。
     gemini:
+      # Gemini 使用 generate-content 协议。
       api-type: "generate-content"
+      # 通过 x-goog-api-key 请求头发送的 API Key。
       api-key: "AIza..."
+      # 填写根地址；插件会拼接 /v1beta/models/ 和模型请求路径。
       base-url: "https://generativelanguage.googleapis.com"
       generate-content:
         cached-content:
+          # 是否启用 Gemini 显式上下文缓存。模型和服务端必须支持 cachedContent。
           enabled: false
 
+    # Anthropic：使用 Messages API，按模型能力选择 Thinking 配置。
     anthropic:
+      # Anthropic 使用 messages 协议。
       api-type: "messages"
+      # 通过 x-api-key 请求头发送的 API Key。
       api-key: "sk-ant-xxx"
+      # 填写官方根地址或 Messages API 兼容网关地址。
       base-url: "https://api.anthropic.com"
+      # 实际发送到 anthropic-version 请求头的 API 版本。
+      # 2026-10-21 及之后的版本不发送 temperature、top_p 和 top_k。
       api-version: "2023-06-01"
 
-  ####################################################################
-  #                          私人 AI
-  #
-  # 每个模式都可以独立选择厂商、模型、思考强度和展示类型。
-  #
-  # normal           -> 普通模式
-  # normal-thinking  -> 普通思考模式
-  # advanced         -> 高级模式
-  # advanced-thinking-> 高级思考模式
-  ####################################################################
+  # 私人会话设置。四种模式分别选择厂商、模型、思考强度和展示方式。
   personal:
     enabled: true
     prompt:
+      # 私人会话的系统提示词。此处的字数建议不等同于 Token 上限。
       system: >
         你是 Minecraft 服务器中的私人 AI 助手。
         请直接回答玩家问题，回答清晰、准确、简洁。
         在能够完整解决问题的前提下，尽量控制在 50 字以内。
         如果问题确实需要较长说明，再适当增加长度。
 
+    # normal：普通；normal-thinking：普通思考；advanced：高级；advanced-thinking：高级思考。
+    # provider 引用 ai.adapters 下的连接；model 必须是该连接实际支持的模型名称。
+    # 思考强度：effort 用于 OpenAI、DeepSeek 及支持 effort 的 Anthropic 模型；
+    # budget 用于 Gemini 2.5 和传统 Anthropic；level 用于 Gemini 3。
+    # 展示方式：none 隐藏；summary 显示官方摘要；reasoning 显示协议提供的思考文本。
+    # DeepSeek 使用 reasoning 或 none；Gemini、Anthropic 使用 summary 或 none。
+    # Anthropic 新型号按能力使用 adaptive；不可关闭的型号会使用支持的低思考配置。
+    # 展示开关不会删除历史中的 Anthropic 签名或 Gemini Thought Signature。
     modes:
       normal:
         provider: "openai"
@@ -110,7 +118,7 @@ ai:
 
       normal-thinking:
         provider: "deepseek"
-        model: "deepseek-reasoner"
+        model: "deepseek-flash"
         thinking:
           enabled: true
           strength:
@@ -141,86 +149,131 @@ ai:
         output:
           max-tokens: 32768
 
+    # 私人历史按玩家独立保存，仅提交完整回答或有效的拒绝响应。
     history:
+      # sliding：保留最近若干轮；accumulate：累计到轮数上限后需开启下一轮会话。
       mode: "sliding"
+      # 私人历史配置项。当前玩家的实际轮数上限由 permissions.groups.<组>.max-history 决定。
       max-rounds: 20
       persistence:
+        # 是否将私人历史保存到 history/<UUID>.yml。
+        # 清除历史时，无论此开关是否开启，都会删除已有文件并使旧请求失效。
         enabled: true
 
     streaming:
+      # 私人流式开关。需同时开启 ai.adapters.request.streaming。
       enabled: true
+      # BossBar 刷新间隔，单位：服务器 tick；实际限制在 1～4 tick。
       update-ticks: 4
+      # BossBar 预览长度，按 Unicode 码点计数；实际限制在 1～64。
       preview-code-points: 48
+      # 保留配置项。当前私人思考缓冲使用固定 96 码点、换行或等待 500 毫秒触发输出。
       reasoning-buffer-code-points: 96
+      # 最终输出后 BossBar 保留时间，单位：tick；0 表示立即隐藏。
       bossbar-hold-ticks: 40
+      # 非流式回答同时展示思考时，思考与最终回答之间的延迟，单位：tick。
       answer-delay-ticks: 20
-      # true 时允许思考内容在回答前进入私人聊天；display=none 时仍不会显示。
+      # 是否允许思考内容进入私人聊天。模式 display 为 none 时仍不展示。
       show-thinking-in-chat: true
 
     console:
+      # 控制台私人会话的历史轮数上限。
       max-history: 30
+      # 是否记录请求与回答到控制台；可能包含对话内容，按需开启。
       log-to-console: false
 
-  ####################################################################
-  #                          公共 AI
-  #
-  # 公共 AI 使用独立共享历史、提示词、费用和展示设置，不继承私人 AI 模式。
-  ####################################################################
+  # 公共会话设置。所有参与者共享一份历史，不继承私人模式的模型、提示词和费用。
   public:
+    # 是否开放公共 AI。
     enabled: true
+    # 公共聊天触发名称。例如 AI 对应“@AI 问题”；名称不要包含空格。
     trigger: "AI"
+    # 引用 ai.adapters 下的厂商连接名称。
     provider: "openai"
+    # 该厂商或网关实际支持的模型名称。
     model: "gpt-6.1-sol"
+    # 每次公共请求消耗的点数，独立于私人四种模式的费用。
     cost-points: 1
 
     prompt:
+      # 公共会话的系统提示词。回答可能展示给多名玩家。
       system: >
         你是 Minecraft 服务器的公共 AI 助手。
         你的回答会展示给服务器中的多个玩家。
         请避免泄露玩家私人信息，回答清晰、简洁并遵守服务器规则。
         在能够完整解决问题的前提下，尽量控制在 80 字以内。
     context:
+      # 玩家上下文模板，支持 {player}；安装 PlaceholderAPI 时可解析其占位符。
       player-template: "{player}"
 
+    # 思考配置规则与私人模式相同，强度类型和展示方式必须匹配厂商能力。
     thinking:
+      # 请求是否启用思考；不可关闭思考的模型会使用对应的低思考配置。
       enabled: true
       strength:
+        # effort、budget 或 level；按所选厂商和模型选择。
         type: "effort"
+        # effort 通常为 low/medium/high；budget 为 Token 数；level 取决于 Gemini 型号。
         value: "medium"
-      # OpenAI 使用 summary；DeepSeek 可使用 reasoning；关闭则使用 none。
+      # none 隐藏；OpenAI Responses、Gemini、Anthropic 可用 summary；DeepSeek 可用 reasoning。
       display: "summary"
 
     output:
+      # 单次输出 Token 上限，不是字符数。思考可能占用输出预算；截断回答不会提交历史。
       max-tokens: 32768
 
     streaming:
+      # 公共流式开关。需同时开启 ai.adapters.request.streaming。
       enabled: true
+      # BossBar 预览对象：all 为所有在线玩家，asker 为提问者；最终公共回答仍会广播。
       audience: "all"
+      # 保留配置项。当前公共增量只用于 BossBar 预览，不按此值分批发送聊天消息。
       buffer-code-points: 96
+      # 公共 BossBar 刷新配置，单位：毫秒；当前实际刷新间隔不超过 200 毫秒。
       flush-interval-ms: 500
 
     history:
+      # sliding 保留最近轮次；accumulate 在达到上限后进入公共会话处理流程。
       mode: "sliding"
+      # 公共共享历史的轮数上限，至少为 1。
       max-rounds: 20
       persistence:
+        # 是否保存公共历史到 history/public-ai.yml。
+        # 关闭或清除公共历史时会删除旧文件，不影响玩家私人历史。
         enabled: false
 
+# 点数与购买设置。私人请求按模式收费，公共请求使用 ai.public.cost-points。
 points:
+  # 私人普通模式每次消耗的点数。
   normal-cost: 1
+  # 私人普通思考模式每次消耗的点数。
   normal-think-cost: 2
+  # 私人高级模式每次消耗的点数。
   pro-cost: 3
+  # 私人高级思考模式每次消耗的点数。
   pro-think-cost: 6
+  # 通过经济系统购买每个点数所需的货币金额。
   cost-per-point: 100.0
+  # 每日可购买的点数上限。
   max-buy-per-day: 20
 
+# 请求频率限制
 rate-limit:
+  # 是否限制玩家请求频率。
   enabled: true
+  # 每名玩家在滚动 60 秒窗口内允许的请求次数。
   per-minute: 3
 
+# 每日用量限制
 daily-limit:
+  # 是否启用每日用量限制；各权限组的点数额度见下方。
   enabled: true
 
+# 权限组设置
 permissions:
+  # default 为默认组；其他组通过 permission 匹配玩家权限。
+  # max-points 为每日点数额度，-1 表示不限；max-question-length 为问题长度，0 表示不限。
+  # max-history 为私人历史轮数上限；0 表示不保留历史。
   groups:
     default:
       max-points: 10
@@ -237,9 +290,14 @@ permissions:
       max-question-length: 0
       max-history: 20
 
+# 交互音效设置
 sounds:
+  # 是否播放插件交互音效。
   enabled: true
+  # 全局音量倍率，与单项 volume 相乘。
   global-volume: 0.5
+  # 全局音调倍率，与单项 pitch 相乘。
+  # 下方 sound 使用 Bukkit Sound 枚举名称；volume 和 pitch 分别为单项音量与音调。
   global-pitch: 1.0
   menu-open: {sound: "BLOCK_CHEST_OPEN", volume: 0.6, pitch: 1.0}
   button-click: {sound: "UI_BUTTON_CLICK", volume: 0.4, pitch: 1.2}

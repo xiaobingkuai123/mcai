@@ -26,12 +26,17 @@ public final class PlayerStreamOutput {
     private volatile PreviewState previewState=new PreviewState(false,"");
     private BossBar bar; private boolean displayedAnswerPhase; private long lastTickErrorLog;
     public PlayerStreamOutput(McAI plugin, Player player) {
-        this(plugin, player, plugin.schedulerAdapter, plugin::isEnabled, plugin.languageManager::get,
+        this(plugin, player, plugin.schedulerAdapter, generationValid(plugin, player.getUniqueId()), plugin.languageManager::get,
                 System::nanoTime, () -> plugin.soundManager.playAnswer(player), plugin.getLogger(),
                 plugin.getConfig().getLong("ai.personal.streaming.update-ticks", 4),
                 plugin.getConfig().getInt("ai.personal.streaming.preview-code-points", 48),
                 plugin.getConfig().getBoolean("ai.personal.streaming.show-thinking-in-chat", true),
                 plugin.getConfig().getLong("ai.personal.streaming.bossbar-hold-ticks", 40));
+    }
+
+    private static java.util.function.BooleanSupplier generationValid(McAI plugin, java.util.UUID id) {
+        long generation = plugin.playerHistoryGeneration(id);
+        return () -> plugin.isEnabled() && plugin.playerHistoryGeneration(id) == generation;
     }
 
     // Same output path with deterministic scheduler/clock dependencies for acceptance tests.

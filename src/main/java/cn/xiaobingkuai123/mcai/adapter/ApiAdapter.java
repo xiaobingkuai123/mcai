@@ -4,15 +4,25 @@ import java.net.http.HttpRequest;
 import java.util.List;
 
 public interface ApiAdapter {
-    /** Provider-neutral message plus optional provider block metadata. */
     record Message(String role, String content, String blockType, String signature) {
         public Message(String role, String content) { this(role, content, "text", null); }
         public Message(String role, String content, String blockType) { this(role, content, blockType, null); }
     }
+    enum CompletionStatus { COMPLETED, INCOMPLETE, REFUSED, BLOCKED, PAUSED, UNSUPPORTED, FAILED }
     record CacheUsage(String field, long hitTokens, long missTokens) {}
+    record TokenUsage(Long inputTokens, Long outputTokens, Long totalTokens, Long cachedInputTokens,
+                      Long cacheCreationInputTokens, Long reasoningTokens, String source, boolean complete) {}
     record AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature,
-                           List<Message> contentBlocks) {
-        public AdapterResponse { contentBlocks = contentBlocks == null ? List.of() : List.copyOf(contentBlocks); }
+                           List<Message> contentBlocks, CompletionStatus completionStatus, String finishReason,
+                           TokenUsage tokenUsage) {
+        public AdapterResponse {
+            contentBlocks = contentBlocks == null ? List.of() : List.copyOf(contentBlocks);
+            java.util.Objects.requireNonNull(completionStatus);
+        }
+        public boolean accepted() { return completionStatus == CompletionStatus.COMPLETED || completionStatus == CompletionStatus.REFUSED; }
+        public AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature, List<Message> contentBlocks) {
+            this(content, reasoning, cacheUsage, reasoningSignature, contentBlocks, CompletionStatus.COMPLETED, null, null);
+        }
         public AdapterResponse(String content, String reasoning, CacheUsage cacheUsage, String reasoningSignature) {
             this(content, reasoning, cacheUsage, reasoningSignature, List.of());
         }

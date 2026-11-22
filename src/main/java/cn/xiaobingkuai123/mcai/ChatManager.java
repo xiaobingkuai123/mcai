@@ -3,6 +3,7 @@ package cn.xiaobingkuai123.mcai;
 import cn.xiaobingkuai123.mcai.adapter.ApiAdapter;
 import cn.xiaobingkuai123.mcai.adapter.ApiRequestOptions;
 import cn.xiaobingkuai123.mcai.adapter.CacheUsageParser;
+import cn.xiaobingkuai123.mcai.adapter.TokenUsageParser;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
@@ -31,10 +32,14 @@ public class ChatManager {
         UUID playerId = player.getUniqueId();
         final String playerName = player.getName();
         final Object requestToken = new Object();
+        final long historyGeneration;
 
-        if (plugin.activePlayerRequests.putIfAbsent(playerId, requestToken) != null) {
-            player.sendMessage(plugin.languageManager.get("stream-busy"));
-            return;
+        synchronized (plugin.playerHistoryLock(playerId)) {
+            historyGeneration = plugin.playerHistoryGeneration(playerId);
+            if (plugin.activePlayerRequests.putIfAbsent(playerId, requestToken) != null) {
+                player.sendMessage(plugin.languageManager.get("stream-busy"));
+                return;
+            }
         }
 
         boolean streaming = plugin.getConfig().getBoolean("ai.adapters.request.streaming", true)
@@ -84,18 +89,24 @@ public class ChatManager {
                     throw new CancellationException("Player stream closed");
                 }
 
-                String answer = response.content();
+                requireAccepted(response);
+                String answer = visibleContent(response);
                 String reasoning = response.reasoning();
 
                 if (answer == null || answer.isBlank()) {
                     throw new IOException("AI returned an empty answer");
                 }
 
-                ConversationHistory memory = conversationMemory(playerId, maxHist);
+                ConversationHistory memory;
+                synchronized (plugin.playerHistoryLock(playerId)) {
+                ensureActive(playerId, requestToken);
+                memory = conversationMemory(playerId, maxHist);
                 List<ApiAdapter.Message> completedRound = new ArrayList<>();
                 completedRound.add(new ApiAdapter.Message("user", question));
                 if ((isAnthropicMode(mode) || isGeminiMode(mode)) && !response.contentBlocks().isEmpty()) {
                     completedRound.addAll(response.contentBlocks());
+                    if (response.completionStatus() == ApiAdapter.CompletionStatus.REFUSED && response.contentBlocks().stream().noneMatch(b -> "text".equals(b.blockType()) && !b.content().isBlank()))
+                        completedRound.add(new ApiAdapter.Message("assistant", answer));
                 } else {
                     if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
                         completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
@@ -103,16 +114,19 @@ public class ChatManager {
                     completedRound.add(new ApiAdapter.Message("assistant", answer));
                 }
                 memory.addRound(completedRound);
+                if (plugin.historyPersistenceEnabled && plugin.historyPersistence != null) {
+                    ensureActive(playerId, requestToken);
+                    try { plugin.historyPersistence.save(playerId, memory); }
+                    catch (Exception e) { plugin.getLogger().warning("Unable to save conversation history"); }
+                }
+                }
                 String displayAnswer = answer;
                 if (plugin.historyMode == ConversationHistory.Mode.ACCUMULATE) {
                     int roundLimit = maxHist;
                     int roundCount = Math.min(roundLimit, memory.roundCount());
                     displayAnswer += " (" + roundCount + "/" + roundLimit + ")";
                 }
-                if (plugin.historyPersistenceEnabled) {
-                    try { plugin.historyPersistence.save(playerId, memory); }
-                    catch (Exception e) { plugin.getLogger().warning("Unable to save conversation history"); }
-                }
+
 
                 if (plugin.logToConsole) {
                     if (displaysThinking(mode) && reasoning != null && !reasoning.isBlank()) {
@@ -123,19 +137,20 @@ public class ChatManager {
                             + "] -> " + playerName + ": " + redactLog(ChatColor.stripColor(answer)));
                 }
 
+                ensureActive(playerId, requestToken);
                 if (output != null) {
                     output.finish(displayAnswer, displaysThinking(mode) ? reasoning : null);
                 } else {
                     final String finalReasoning = reasoning;
                     final String finalAnswer = displayAnswer;
                     plugin.schedulerAdapter.runTask(player, () -> {
-                        if (!player.isOnline()) return;
+                        if (!player.isOnline() || plugin.playerHistoryGeneration(playerId) != historyGeneration) return;
                         if (isThinking && displaysThinking(mode) && finalReasoning != null && !finalReasoning.isBlank()) {
                             plugin.soundManager.playReasoningDone(player);
                             PlayerStreamOutput.sendText(plugin, player,
                                     "reasoning-summary-label", finalReasoning, ChatColor.GRAY);
                             plugin.schedulerAdapter.runTaskLater(player, () -> {
-                                if (!player.isOnline()) return;
+                                if (!player.isOnline() || plugin.playerHistoryGeneration(playerId) != historyGeneration) return;
                                 plugin.soundManager.playAnswer(player);
                                 PlayerStreamOutput.sendText(plugin, player,
                                         "answer-label", finalAnswer, ChatColor.WHITE);
@@ -149,7 +164,7 @@ public class ChatManager {
                 }
                 if (plugin.historyMode == ConversationHistory.Mode.ACCUMULATE && memory.capped()) {
                     plugin.schedulerAdapter.runTask(player, () -> {
-                        if (player.isOnline()) plugin.openNextRoundPrompt(player);
+                        if (player.isOnline() && plugin.playerHistoryGeneration(playerId) == historyGeneration) plugin.openNextRoundPrompt(player);
                     });
                 }
             } catch (Exception e) {
@@ -163,7 +178,7 @@ public class ChatManager {
                         output.fail(message);
                     } else {
                         plugin.schedulerAdapter.runTask(player, () -> {
-                            if (player.isOnline()) player.sendMessage(message);
+                            if (player.isOnline() && plugin.playerHistoryGeneration(playerId) == historyGeneration) player.sendMessage(message);
                         });
                     }
                 }
@@ -213,17 +228,53 @@ public class ChatManager {
         return quoted.replaceAll("(?i)(authorization|api[-_ ]?key|access[-_]?token|token)\\s*[:=]\\s*(?:bearer\\s+)?[^\\s,;\\\"]+", "$1=[REDACTED]")
                 .replaceAll("(?i)bearer\\s+[^\\s,;\\\"]+", "Bearer [REDACTED]")
                 .replaceAll("sk-(?:ant-)?[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]+", "[REDACTED]");
-    }    private void logCacheUsage(ApiAdapter.CacheUsage usage) {
+    }
+
+    private void logCacheUsage(ApiAdapter.CacheUsage usage) {
+        logCacheUsage(plugin.getConfig(), usage, message -> plugin.getLogger().info(message));
+    }
+
+    static void logCacheUsage(org.bukkit.configuration.ConfigurationSection config,
+            ApiAdapter.CacheUsage usage, Consumer<String> logger) {
+        if (!config.getBoolean("ai.adapters.request.log-cache-usage", true)) return;
         if (usage == null) {
-            plugin.getLogger().info("AI prompt cache: not-reported (field=none)");
+            logger.accept("AI 提示缓存 / AI prompt cache: 未报告 / not-reported (字段 / field=none)");
             return;
         }
-        String state = usage.hitTokens() > 0 ? "hit" : "miss";
-        plugin.getLogger().info("AI prompt cache: " + state + " (field=" + usage.field()
-                + ", hit=" + usage.hitTokens() + ", miss=" + usage.missTokens() + ")");
+        String state = usage.hitTokens() > 0 ? "命中 / hit" : "未命中 / miss";
+        logger.accept("AI 提示缓存 / AI prompt cache: " + state + " (字段 / field=" + usage.field()
+                + ", 命中 Token / hit=" + usage.hitTokens() + ", 未命中 Token / miss=" + usage.missTokens() + ")");
+    }
+
+    static final class ResponseStatusException extends IOException {
+        final ApiAdapter.CompletionStatus status;
+        ResponseStatusException(ApiAdapter.CompletionStatus status) { super("AI response status: " + status); this.status = status; }
+    }
+    static void requireAccepted(ApiAdapter.AdapterResponse response) throws ResponseStatusException {
+        if (!response.accepted()) throw new ResponseStatusException(response.completionStatus());
+    }
+    static String visibleContent(ApiAdapter.AdapterResponse response) {
+        return response.completionStatus() == ApiAdapter.CompletionStatus.REFUSED && (response.content() == null || response.content().isBlank())
+                ? "AI declined this request." : response.content();
+    }
+    private void ensureActive(UUID id, Object token) {
+        if (!plugin.isEnabled() || plugin.activePlayerRequests.get(id) != token) throw new CancellationException("Stale private request");
+    }
+    private void diagnoseStatus(ApiAdapter.AdapterResponse response) {
+        if (response.completionStatus() == ApiAdapter.CompletionStatus.UNSUPPORTED)
+            plugin.getLogger().warning("AI returned unsupported completion state (provider reason retained in response)");
+    }
+    private static String reported(Long n) { return n == null ? "not-reported" : n.toString(); }
+    private void logTokenUsage(ApiAdapter.TokenUsage u) {
+        plugin.getLogger().info(u == null ? "AI token usage: not-reported, complete=false"
+                : "AI token usage: input=" + reported(u.inputTokens()) + ", output=" + reported(u.outputTokens())
+                + ", total=" + reported(u.totalTokens()) + ", cached_input=" + reported(u.cachedInputTokens())
+                + ", cache_creation=" + reported(u.cacheCreationInputTokens()) + ", reasoning=" + reported(u.reasoningTokens())
+                + ", source=" + u.source() + ", complete=" + u.complete());
     }
 
     private String playerErrorMessage(Exception error, boolean streaming) {
+        if (error instanceof ResponseStatusException state) return "AI response: " + state.status;
         if (error instanceof HttpTimeoutException
                 || error instanceof java.util.concurrent.TimeoutException) {
             return plugin.languageManager.get("stream-timeout");
@@ -257,7 +308,8 @@ public class ChatManager {
             boolean reserved = reservation.counted();
             try {
                 ApiAdapter.AdapterResponse response = callApi(McAI.CONSOLE_UUID, question, mode, plugin.consoleMaxHistory, null, plugin::isEnabled);
-                String answer = response.content();
+                requireAccepted(response);
+                String answer = visibleContent(response);
                 if (answer == null || answer.isBlank()) {
                     plugin.getLogger().warning("AI returned an empty answer");
                     return;
@@ -266,6 +318,8 @@ public class ChatManager {
                 completedRound.add(new ApiAdapter.Message("user", question));
                 if ((isAnthropicMode(mode) || isGeminiMode(mode)) && !response.contentBlocks().isEmpty()) {
                     completedRound.addAll(response.contentBlocks());
+                    if (response.completionStatus() == ApiAdapter.CompletionStatus.REFUSED && response.contentBlocks().stream().noneMatch(b -> "text".equals(b.blockType()) && !b.content().isBlank()))
+                        completedRound.add(new ApiAdapter.Message("assistant", answer));
                 } else {
                     if (isAnthropicMode(mode) && response.reasoning() != null && response.reasoningSignature() != null) {
                         completedRound.add(new ApiAdapter.Message("assistant", response.reasoning(), "thinking", response.reasoningSignature()));
@@ -315,12 +369,14 @@ public class ChatManager {
     }
 
     ConversationHistory conversationMemory(UUID userId, int maxRounds) {
+        synchronized (plugin.playerHistoryLock(userId)) {
         return plugin.conversationMemories.computeIfAbsent(userId, id -> {
             if (plugin.historyPersistenceEnabled && plugin.historyPersistence != null) {
                 return plugin.historyPersistence.load(id, plugin.historyMode, Math.max(0, maxRounds));
             }
             return new ConversationHistory(plugin.historyMode, Math.max(0, maxRounds));
         });
+        }
     }
 
     private ApiAdapter.AdapterResponse callApi(UUID userId, String question,
@@ -328,7 +384,11 @@ public class ChatManager {
             java.util.function.BooleanSupplier active) throws Exception {
         boolean isThinking = mode.endsWith("_think");
         McAI.PersonalMode configured = personalMode(mode);
-        ConversationHistory memory = conversationMemory(userId, effectiveHistory);
+        ConversationHistory memory;
+        synchronized (plugin.playerHistoryLock(userId)) {
+            if (!active.getAsBoolean()) throw new CancellationException("Stale private request");
+            memory = conversationMemory(userId, effectiveHistory);
+        }
         ApiRequestProfile profile = new ApiRequestProfile(configured.provider(), configured.adapter(),
                 configured.apiKey(), configured.baseUrl(), configured.model(), configured.maxTokens(),
                 plugin.getConfig().getString("ai.personal.prompt.system", ""), configured.thinking(),
@@ -346,7 +406,7 @@ public class ChatManager {
                     && ("summary".equals(configured.display()) && delta.type() == AiStreamClient.EventType.OPENAI_REASONING_SUMMARY
                     || "summary".equals(configured.display()) && delta.type() == AiStreamClient.EventType.GEMINI_THOUGHT_SUMMARY
                     || "reasoning".equals(configured.display()) && delta.type() == AiStreamClient.EventType.DEEPSEEK_REASONING
-                    || "reasoning".equals(configured.display()) && delta.type() == AiStreamClient.EventType.ANTHROPIC_THINKING))
+                    || "summary".equals(configured.display()) && delta.type() == AiStreamClient.EventType.ANTHROPIC_THINKING))
                 streamListener.accept(delta);
         };
         return callApi(profile, memory, question, filtered, active);
@@ -381,7 +441,7 @@ public class ChatManager {
         ApiRequestOptions options = new ApiRequestOptions(profile.temperature(), profile.topP(), profile.maxTokens(),
                 profile.timeoutSeconds(), profile.maxRetries(),
                 streamListener != null && profile.streamingEnabled(),
-                profile.thinkingEnabled(), profile.thinkingBudget(), profile.reasoningEffort(), cachedContent, profile.includeThoughts());
+                profile.thinkingEnabled(), profile.thinkingBudget(), profile.reasoningEffort(), cachedContent, profile.includeThoughts(), profile.display());
         java.net.http.HttpClient client = plugin.getHttpClient();
         if (client == null) throw new CancellationException("Plugin is shutting down");
         var emitted = new java.util.concurrent.atomic.AtomicBoolean();
@@ -389,7 +449,7 @@ public class ChatManager {
         GeminiCachedContentManager.CachedOperation<ApiAdapter.AdapterResponse> operation = resource -> {
             ApiRequestOptions attempt = new ApiRequestOptions(options.temperature(), options.topP(), options.maxTokens(),
                     options.timeoutSeconds(), options.maxRetries(), options.streaming(), options.thinkingEnabled(),
-                    options.thinkingBudget(), options.reasoningEffort(), resource, options.includeThoughts());
+                    options.thinkingBudget(), options.reasoningEffort(), resource, options.includeThoughts(), options.display());
             HttpRequest request = adapter.buildRequest(apiBaseUrl, apiKey, model, apiMessages, attempt);
             return executeRequest(client, adapter, request, attempt, observed, active);
         };
@@ -405,6 +465,8 @@ public class ChatManager {
             ApiAdapter.AdapterResponse streamed = retry.stream(
                     client, adapter, request, streamListener, options.maxRetries());
             logCacheUsage(streamed.cacheUsage());
+            logTokenUsage(streamed.tokenUsage());
+            diagnoseStatus(streamed);
             return streamed;
         }
 
@@ -416,14 +478,17 @@ public class ChatManager {
                 ApiAdapter.AdapterResponse response = adapter.parseResponse(body);
                 ApiAdapter.CacheUsage cacheUsage = CacheUsageParser.parse(
                         new com.google.gson.JsonParser().parse(body).getAsJsonObject());
-                logCacheUsage(cacheUsage);
+                if (response.cacheUsage() != null) cacheUsage = response.cacheUsage();
+                ApiAdapter.TokenUsage tokenUsage = response.tokenUsage() != null ? response.tokenUsage()
+                        : TokenUsageParser.parse(com.google.gson.JsonParser.parseString(body).getAsJsonObject());
+                logCacheUsage(cacheUsage); logTokenUsage(tokenUsage); diagnoseStatus(response);
                 return new ApiAdapter.AdapterResponse(response.content(), response.reasoning(),
-                        cacheUsage, response.reasoningSignature(), response.contentBlocks());
+                        cacheUsage, response.reasoningSignature(), response.contentBlocks(), response.completionStatus(), response.finishReason(), tokenUsage);
             } catch (com.google.gson.JsonParseException | IllegalStateException e) {
                 String contentType = "unavailable";
                 plugin.getLogger().warning("AI provider returned an invalid response (content-type="
                         + contentType.replaceAll("[^a-zA-Z0-9/;= ._-]", "?") + ", length=" + body.length() + ")");
-                throw new IOException("AI provider returned an invalid response", e);
+                throw new AiStreamClient.ProtocolException("AI provider returned an invalid response", e);
             }
         }
         throw new AiStreamClient.ApiHttpException(status);

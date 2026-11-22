@@ -17,6 +17,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class McAI extends JavaPlugin {
     private static McAI instance;
+    private volatile org.bukkit.configuration.file.FileConfiguration acceptedConfiguration;
+    private final ThreadLocal<org.bukkit.configuration.file.FileConfiguration> candidateConfiguration = new ThreadLocal<>();
+    @Override public org.bukkit.configuration.file.FileConfiguration getConfig() {
+        var candidate = candidateConfiguration.get();
+        return candidate != null ? candidate : acceptedConfiguration != null ? acceptedConfiguration : super.getConfig();
+    }
     private volatile java.net.http.HttpClient httpClient;
     private Economy economy;
     private FloodgateApi floodgateApi;
@@ -46,7 +52,12 @@ public class McAI extends JavaPlugin {
     volatile int ratePerMinute;
     volatile boolean dailyLimitEnabled;
     volatile boolean economyEnabled;
-    final Map<String, PersonalMode> personalModes = new ConcurrentHashMap<>();
+    volatile Map<String, PersonalMode> personalModes = Map.of();
+    private final Map<UUID, Object> playerHistoryLocks = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> playerHistoryGenerations = new ConcurrentHashMap<>();
+    Object playerHistoryLock(UUID id) { return playerHistoryLocks.computeIfAbsent(id, ignored -> new Object()); }
+    long playerHistoryGeneration(UUID id) { return playerHistoryGenerations.getOrDefault(id, 0L); }
+    void invalidatePlayerRequests(UUID id) { activePlayerRequests.remove(id); playerHistoryGenerations.merge(id, 1L, Long::sum); }
 
     record PersonalMode(String provider, ApiAdapter adapter, String apiKey, String baseUrl,
             String model, int maxTokens, boolean thinking, String strengthType, int thinkingBudget,
@@ -153,7 +164,28 @@ public class McAI extends JavaPlugin {
     }
 
     void refreshConfigurationCache() {
-        reloadConfig();
+        super.reloadConfig();
+        applyConfigurationCandidate(super.getConfig());
+    }
+
+    void applyConfigurationCandidate(org.bukkit.configuration.file.FileConfiguration candidate) {
+        candidateConfiguration.set(candidate);
+        Map<String, PersonalMode> nextModes = new LinkedHashMap<>();
+        try {
+            requireSection("ai"); requireSection("ai.adapters"); requireSection("ai.adapters.request"); requireSection("ai.personal");
+            for (String mode : List.of("normal", "normal-thinking", "advanced", "advanced-thinking")) {
+                PersonalMode next = readPersonalMode(requireSection("ai.personal.modes." + mode));
+                validateDisplay(next); validateRequest(next.adapter(), next.apiKey(), next.baseUrl(), next.model(), next.maxTokens(), next.thinking(), next.thinkingBudget(), "budget".equals(next.strengthType()) ? "medium" : next.strengthValue(), next.display());
+                nextModes.put(mode, next);
+            }
+            PublicAiManager.Settings.read(this);
+            validateDisplayModes(nextModes);
+        } catch (RuntimeException failure) {
+            candidateConfiguration.remove();
+            throw failure;
+        }
+        acceptedConfiguration = candidateConfiguration.get();
+        candidateConfiguration.remove();
         requireSection("ai");
         requireSection("ai.adapters");
         ConfigurationSection request = requireSection("ai.adapters.request");
@@ -167,10 +199,7 @@ public class McAI extends JavaPlugin {
         historyPersistenceEnabled = personal.getBoolean("history.persistence.enabled", true);
         thinkDelayTicks = Math.max(0, personal.getInt("streaming.answer-delay-ticks", 20));
 
-        personalModes.clear();
-        for (String mode : List.of("normal", "normal-thinking", "advanced", "advanced-thinking")) {
-            personalModes.put(mode, readPersonalMode(requireSection("ai.personal.modes." + mode)));
-        }
+        personalModes = Map.copyOf(nextModes);
 
         normalCostPoints = getConfig().getInt("points.normal-cost", 1);
         normalThinkCostPoints = getConfig().getInt("points.normal-think-cost", 2);
@@ -182,8 +211,8 @@ public class McAI extends JavaPlugin {
         ratePerMinute = getConfig().getInt("rate-limit.per-minute", 3);
         dailyLimitEnabled = getConfig().getBoolean("daily-limit.enabled", true);
         economyEnabled = (economy != null);
-        validateDisplayModes();
-        soundManager.reload();
+
+        if (soundManager != null) soundManager.reload();
     }
 
     private ConfigurationSection requireSection(String path) {
@@ -215,8 +244,8 @@ public class McAI extends JavaPlugin {
         return value;
     }
 
-    private void validateDisplayModes() {
-        personalModes.values().forEach(this::validateDisplay);
+    private void validateDisplayModes(Map<String, PersonalMode> modes) {
+        modes.values().forEach(this::validateDisplay);
         var publicSection = requireSection("ai.public");
         String provider = requireText(publicSection, "provider");
         requireSection("ai.adapters." + provider);
@@ -233,7 +262,7 @@ public class McAI extends JavaPlugin {
             case "openai" -> "effort".equalsIgnoreCase(type);
             case "deepseek" -> "effort".equalsIgnoreCase(type);
             case "gemini" -> Set.of("budget", "level").contains(type.toLowerCase(Locale.ROOT));
-            case "anthropic" -> "budget".equalsIgnoreCase(type);
+            case "anthropic" -> Set.of("budget", "effort").contains(type.toLowerCase(Locale.ROOT));
             default -> false;
         };
         if (!valid) throw new IllegalArgumentException("Thinking strength type '" + type + "' is not supported by " + provider);
@@ -242,10 +271,21 @@ public class McAI extends JavaPlugin {
     private void validateDisplay(PersonalMode mode) {
         if (!Set.of("none", "summary", "reasoning").contains(mode.display())) throw new IllegalArgumentException("Invalid thinking.display: " + mode.display());
         if ("summary".equals(mode.display()) && "deepseek".equalsIgnoreCase(mode.provider())) throw new IllegalArgumentException("DeepSeek does not provide reasoning summaries");
+        if ("reasoning".equals(mode.display()) && "anthropic".equalsIgnoreCase(mode.provider())) throw new IllegalArgumentException("Anthropic does not expose raw reasoning");
         if ("reasoning".equals(mode.display()) && "gemini".equalsIgnoreCase(mode.provider())) throw new IllegalArgumentException("Gemini provides thought summaries, not raw reasoning");
         validateStrength(mode.provider(), mode.strengthType(), mode.thinking());
     }
 
+
+    static void validateRequest(ApiAdapter adapter, String key, String base, String model, int max, boolean thinking, int budget, String effort, String display) {
+        java.net.URI uri = java.net.URI.create(base);
+        if (!("https".equals(uri.getScheme()) || "http".equals(uri.getScheme())) || uri.getHost() == null || uri.getQuery() != null || uri.getFragment() != null || uri.getUserInfo() != null)
+            throw new IllegalArgumentException("Invalid AI base URL");
+        if (key.isBlank() || model.isBlank() || max <= 0) throw new IllegalArgumentException("Invalid AI request configuration");
+        try { adapter.buildRequest(base,key,model,List.of(),new ApiRequestOptions(.7,1,max,120,0,false,thinking,budget,effort,null,!"none".equals(display),display)); }
+        catch (RuntimeException e) { throw e; }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid AI request configuration",e); }
+    }
 
     ApiAdapter createAdapter(String providerName) {
         var section = getConfig().getConfigurationSection("ai.adapters." + providerName);
@@ -287,6 +327,20 @@ public class McAI extends JavaPlugin {
     }
 
     void clearPlayerHistory(UUID id) {
+        if (CONSOLE_UUID.equals(id)) {
+            synchronized (consoleRoundLimit) { clearPlayerHistoryLocked(id); }
+        } else clearPlayerHistoryLocked(id);
+    }
+
+    private void clearPlayerHistoryLocked(UUID id) {
+        synchronized (playerHistoryLock(id)) {
+        invalidatePlayerRequests(id);
+        PlayerStreamOutput output = activeStreamOutputs.remove(id);
+        if (output != null) {
+            Player owner = getServer().getPlayer(id);
+            if (owner != null) schedulerAdapter.runTask(owner, output::closeNow, output::closeOnDisable);
+            else output.closeOnDisable();
+        }
         ConversationHistory memory;
         if (CONSOLE_UUID.equals(id)) {
             synchronized (consoleRoundLimit) {
@@ -298,7 +352,8 @@ public class McAI extends JavaPlugin {
             memory = conversationMemories.remove(id);
             if (memory != null) memory.reset();
         }
-        if (historyPersistenceEnabled && historyPersistence != null) historyPersistence.delete(id);
+        if (historyPersistence != null) historyPersistence.delete(id);
+        }
     }
 
     void openNextRoundPrompt(Player player) {

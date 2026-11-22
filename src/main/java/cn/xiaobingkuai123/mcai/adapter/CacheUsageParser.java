@@ -28,9 +28,9 @@ public final class CacheUsageParser {
                 return new ApiAdapter.CacheUsage("prompt_cache_hit_tokens",
                         number(usage, "prompt_cache_hit_tokens"), number(usage, "prompt_cache_miss_tokens"));
             }
-            if (present(usage, "cache_read_input_tokens")) {
+            if (present(usage, "cache_read_input_tokens") || present(usage, "cache_creation_input_tokens") || present(usage, "input_tokens") && !present(usage, "total_tokens")) {
                 return new ApiAdapter.CacheUsage("cache_read_input_tokens",
-                        number(usage, "cache_read_input_tokens"), number(usage, "cache_creation_input_tokens"));
+                        number(usage, "cache_read_input_tokens"), TokenUsageParser.saturatedAdd(number(usage, "input_tokens"), number(usage, "cache_creation_input_tokens")));
             }
             if (present(usage, "cachedContentTokenCount")) {
                 long hit = number(usage, "cachedContentTokenCount");
@@ -68,6 +68,6 @@ public final class CacheUsageParser {
     }
 
     private static long number(JsonObject root, String key) {
-        return present(root, key) ? root.get(key).getAsLong() : 0;
+        return present(root, key) ? root.get(key).getAsBigInteger().max(java.math.BigInteger.ZERO).min(java.math.BigInteger.valueOf(Long.MAX_VALUE)).longValue() : 0;
     }
 }

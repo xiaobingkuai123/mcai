@@ -62,7 +62,7 @@ class BatchFixRegressionTest {
             +event("{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"1\"}}")+stop(0)
             +block(1,"text","hello","")+stop(1)+block(2,"thinking","c","sig2")+stop(2)
             +block(3,"redacted_thinking","opaque","")+stop(3)+block(4,"text","world","")+stop(4)
-            +event("{\"type\":\"message_stop\"}");
+            +event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}") + event("{\"type\":\"message_stop\"}");
         List<AiStreamClient.Delta> visible = new ArrayList<>();
         var response=sendStream(stream, visible::add);
         assertEquals("abc", visible.stream().map(AiStreamClient.Delta::reasoning).collect(java.util.stream.Collectors.joining()));
@@ -74,7 +74,7 @@ class BatchFixRegressionTest {
         var loaded=ConversationHistory.fromMessages(ConversationHistory.Mode.SLIDING,5,history.persistedMessages());
         assertEquals(1,loaded.roundCount()); assertEquals(round,loaded.promptMessages());
         assertEquals("sig2",loaded.promptMessages().get(3).signature());
-        var request=new AnthropicAdapter(5).buildRequest("http://localhost","key","model",1000,loaded.promptMessages(),false);
+        var request=new AnthropicAdapter(5).buildRequest("http://localhost","key","claude-sonnet-4",1000,loaded.promptMessages(),false);
         assertTrue(body(request).contains("sig1")); assertTrue(body(request).contains("sig2")); assertTrue(body(request).contains("opaque"));
     }
     static String body(HttpRequest request) throws Exception {
@@ -100,11 +100,11 @@ class BatchFixRegressionTest {
     }
     @Test void anthropicDoesNotCompleteAtBlockStopOrAcceptUnclosedBlocks() {
         assertThrows(java.io.IOException.class,()->sendStream(block(0,"thinking","a","sig")+stop(0)));
-        assertThrows(AiStreamClient.ProtocolException.class,()->sendStream(block(0,"text","a","")+event("{\"type\":\"message_stop\"}")));
+        assertThrows(AiStreamClient.ProtocolException.class,()->sendStream(block(0,"text","a","")+event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}") + event("{\"type\":\"message_stop\"}")));
         assertThrows(AiStreamClient.ProtocolException.class,()->sendStream(event("{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"x\"}}")));
     }
-    @Test void nonStreamingAnthropicRetainsEverySignature() {
-        var response=new AnthropicAdapter(5).parseResponse("{\"content\":[{\"type\":\"thinking\",\"thinking\":\"a\",\"signature\":\"s1\"},{\"type\":\"thinking\",\"thinking\":\"b\",\"signature\":\"s2\"},{\"type\":\"text\",\"text\":\"ok\"}]}");
+    @Test void nonStreamingAnthropicRetainsEverySignature() throws Exception {
+        var response=new AnthropicAdapter(5).parseResponse("{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a\",\"signature\":\"s1\"},{\"type\":\"thinking\",\"thinking\":\"b\",\"signature\":\"s2\"},{\"type\":\"text\",\"text\":\"ok\"}]}");
         assertEquals("s1",response.contentBlocks().get(0).signature()); assertEquals("s2",response.contentBlocks().get(1).signature());
     }
     @Test void responsesStreamSeparatesSummaryAndAnswerAndUsesDoneFallbackOnce() throws Exception {
@@ -117,7 +117,7 @@ class BatchFixRegressionTest {
                 + event("{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":2,\"text\":\"three\"}")
                 + event("{\"type\":\"response.reasoning_text.delta\",\"delta\":\"hidden\"}")
                 + event("{\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}")
-                + event("{\"type\":\"response.completed\"}");
+                + event("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}");
         List<AiStreamClient.Delta> deltas = new ArrayList<>();
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",e->{byte[] b=stream.getBytes(StandardCharsets.UTF_8);e.getResponseHeaders().set("Content-Type","text/event-stream");e.sendResponseHeaders(200,b.length);try(var out=e.getResponseBody()){out.write(b);}}); server.start();
@@ -129,4 +129,98 @@ class BatchFixRegressionTest {
         } finally { server.stop(0); }
     }
 
+
+    private static ApiAdapter.AdapterResponse wire(ApiAdapter adapter,String events) throws Exception {
+        return ProviderThinkingFlowTest.stream(adapter,events,d -> {});
+    }
+    @Test void chatTerminalMatrixKeepsUsageAfterGeneration() throws Exception {
+        for(ApiAdapter adapter:List.of(new OpenAIAdapter(5),new DeepSeekAdapter(5))) {
+            for(var entry:Map.of("stop",ApiAdapter.CompletionStatus.COMPLETED,"length",ApiAdapter.CompletionStatus.INCOMPLETE,"content_filter",ApiAdapter.CompletionStatus.BLOCKED,"tool_calls",ApiAdapter.CompletionStatus.UNSUPPORTED,"future",ApiAdapter.CompletionStatus.UNSUPPORTED).entrySet()) {
+                String data=event("{\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}")
+                    +event("{\"choices\":[{\"delta\":{},\"finish_reason\":\""+entry.getKey()+"\"}]}")
+                    +event("{\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"total_tokens\":150}}")+event("[DONE]");
+                var r=wire(adapter,data); assertEquals("Hello",r.content()); assertEquals(entry.getValue(),r.completionStatus());
+                assertEquals(entry.getKey(),r.finishReason()); assertEquals(100L,r.tokenUsage().inputTokens()); assertEquals(50L,r.tokenUsage().outputTokens()); assertEquals(150L,r.tokenUsage().totalTokens()); assertTrue(r.tokenUsage().complete());
+            }
+        }
+    }
+    @Test void missingTerminalAndMissingUsageAreDifferent() throws Exception {
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIAdapter(5),event("[DONE]")));
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIAdapter(5),event("{\"choices\":[]}")));
+        var r=wire(new OpenAIAdapter(5),ProviderThinkingFlowTest.chat("{\"content\":\"ok\"}",true)+event("{\"choices\":[],\"usage\":null}")+event("[DONE]"));
+        assertEquals(ApiAdapter.CompletionStatus.COMPLETED,r.completionStatus()); assertNull(r.tokenUsage());
+        assertThrows(AiStreamClient.ProtocolException.class,()->sendStream(event("{\"type\":\"message_stop\"}")));
+    }
+    @Test void anthropicStopMatrixAndCumulativeUsage() throws Exception {
+        for(var e:Map.of("end_turn",ApiAdapter.CompletionStatus.COMPLETED,"max_tokens",ApiAdapter.CompletionStatus.INCOMPLETE,"refusal",ApiAdapter.CompletionStatus.REFUSED,"model_context_window_exceeded",ApiAdapter.CompletionStatus.INCOMPLETE,"pause_turn",ApiAdapter.CompletionStatus.PAUSED,"tool_use",ApiAdapter.CompletionStatus.UNSUPPORTED).entrySet()) {
+            String start=event("{\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":50,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":200}}}");
+            for(int n:new int[]{10,20,30}) start+=event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":null},\"usage\":{\"output_tokens\":"+n+"}}");
+            var r=wire(new AnthropicAdapter(5),start+block(0,"text","ok","")+stop(0)+event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""+e.getKey()+"\"}}")+event("{\"type\":\"message_stop\"}"));
+            assertEquals(e.getValue(),r.completionStatus()); assertEquals(350L,r.tokenUsage().inputTokens()); assertEquals(30L,r.tokenUsage().outputTokens()); assertEquals(380L,r.tokenUsage().totalTokens()); assertEquals(200L,r.cacheUsage().hitTokens()); assertEquals(150L,r.cacheUsage().missTokens()); assertTrue(r.tokenUsage().complete());
+        }
+    }
+    @Test void geminiStatesFeedbackAndProtocolFailures() throws Exception {
+        for(var e:Map.of("STOP",ApiAdapter.CompletionStatus.COMPLETED,"MAX_TOKENS",ApiAdapter.CompletionStatus.INCOMPLETE,"SAFETY",ApiAdapter.CompletionStatus.BLOCKED,"OTHER",ApiAdapter.CompletionStatus.UNSUPPORTED).entrySet()) {
+            String json="{\"candidates\":[{\"finishReason\":\""+e.getKey()+"\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}";
+            assertEquals(e.getValue(),wire(new GeminiAdapter(5),event(json)).completionStatus()); assertEquals(e.getValue(),new GeminiAdapter(5).parseResponse(json).completionStatus());
+        }
+        String blocked="{\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"blockReasonMessage\":\"blocked\"}}";
+        assertEquals(ApiAdapter.CompletionStatus.BLOCKED,new GeminiAdapter(5).parseResponse(blocked).completionStatus());
+        assertEquals(ApiAdapter.CompletionStatus.BLOCKED,wire(new GeminiAdapter(5),event(blocked)).completionStatus());
+        assertThrows(AiStreamClient.ProtocolException.class,()->new GeminiAdapter(5).parseResponse("{\"candidates\":[]}"));
+        assertThrows(AiStreamClient.ProtocolException.class,()->new DeepSeekAdapter(5).parseResponse("{\"choices\":[]}"));
+        assertThrows(AiStreamClient.ProtocolException.class,()->new OpenAIAdapter(5).parseResponse("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"));
+    }
+    @Test void refusalAndResponsesIncompleteRemainDistinct() throws Exception {
+        var chat=new OpenAIAdapter(5).parseResponse("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":null,\"refusal\":\"declined\"}}]}");
+        assertEquals(ApiAdapter.CompletionStatus.REFUSED,chat.completionStatus()); assertEquals("declined",chat.content()); assertDoesNotThrow(()->ChatManager.requireAccepted(chat));
+        String data=event("{\"type\":\"response.refusal.delta\",\"delta\":\"declined\"}")+event("{\"type\":\"response.refusal.done\",\"refusal\":\"declined\"}")+event("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}");
+        var refused=wire(new OpenAIResponsesAdapter(5),data); assertEquals("declined",refused.content()); assertNull(refused.reasoning()); assertEquals(ApiAdapter.CompletionStatus.REFUSED,refused.completionStatus());
+        var r=wire(new OpenAIResponsesAdapter(5),event("{\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}"));
+        assertEquals(ApiAdapter.CompletionStatus.INCOMPLETE,r.completionStatus()); assertEquals("max_output_tokens",r.finishReason()); assertThrows(ChatManager.ResponseStatusException.class,()->ChatManager.requireAccepted(r));
+    }
+
+    @Test void finishReasonWithoutDoneStillFailsBeforeUsageArrival() {
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIAdapter(5),ProviderThinkingFlowTest.chat("{\"content\":\"partial\"}",true)));
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new DeepSeekAdapter(5),ProviderThinkingFlowTest.chat("{\"content\":\"partial\"}",true)));
+    }
+    @Test void anthropicStreamingAndNonStreamingUsageAgree() throws Exception {
+        var a=new AnthropicAdapter(5);
+        var full=a.parseResponse("{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":50,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":200,\"output_tokens\":20}}");
+        var streamed=wire(a,event("{\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":50,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":200}}}")
+            +block(0,"text","ok","")+stop(0)+event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}")+event("{\"type\":\"message_stop\"}"));
+        assertEquals(full.tokenUsage(),streamed.tokenUsage()); assertEquals(370L,streamed.tokenUsage().totalTokens()); assertEquals(full.cacheUsage(),streamed.cacheUsage());
+    }
+    @Test void responsesInternalStatusMustMatchTerminalEvent() {
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIResponsesAdapter(5),event("{\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\"}}")));
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIResponsesAdapter(5),event("{\"type\":\"response.completed\"}")));
+    }
+
+    @Test void malformedRequiredFieldsAreProtocolErrorsAcrossAdapters() {
+        assertThrows(AiStreamClient.ProtocolException.class,()->new AnthropicAdapter(5).parseResponse("{\"stop_reason\":\"end_turn\",\"content\":[false]}"));
+        assertThrows(AiStreamClient.ProtocolException.class,()->new GeminiAdapter(5).parseResponse("{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":false}]}"));
+        assertThrows(AiStreamClient.ProtocolException.class,()->new OpenAIResponsesAdapter(5).parseResponse("{\"status\":\"completed\",\"output\":[false]}"));
+        assertThrows(AiStreamClient.ProtocolException.class,()->wire(new OpenAIAdapter(5),event("{\"choices\":[{\"delta\":{},\"finish_reason\":123}]}")+event("[DONE]")));
+    }
+
+    @Test void cacheLogsAreBilingualAndRespectLiveConfigurationSwitch() {
+        var config = new org.bukkit.configuration.file.YamlConfiguration();
+        List<String> logs = new ArrayList<>();
+        ChatManager.logCacheUsage(config, new ApiAdapter.CacheUsage("cached_tokens", 30, 70), logs::add);
+        ChatManager.logCacheUsage(config, new ApiAdapter.CacheUsage("cached_tokens", 0, 100), logs::add);
+        ChatManager.logCacheUsage(config, null, logs::add);
+        assertEquals(3, logs.size());
+        assertTrue(logs.get(0).contains("命中 / hit"));
+        assertTrue(logs.get(0).contains("命中 Token / hit=30"));
+        assertTrue(logs.get(0).contains("未命中 Token / miss=70"));
+        assertTrue(logs.get(1).contains("未命中 / miss"));
+        assertTrue(logs.get(2).contains("未报告 / not-reported"));
+        config.set("ai.adapters.request.log-cache-usage", false);
+        ChatManager.logCacheUsage(config, new ApiAdapter.CacheUsage("cached_tokens", 30, 70), logs::add);
+        ChatManager.logCacheUsage(config, null, logs::add);
+        assertEquals(3, logs.size());
+        config.set("ai.adapters.request.log-cache-usage", true);
+        ChatManager.logCacheUsage(config, null, logs::add);
+        assertEquals(4, logs.size());
+    }
 }

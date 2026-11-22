@@ -99,10 +99,25 @@ public class GeminiAdapter implements ApiAdapter {
         String value = nullableText(object, key); return value == null ? "" : value;
     }
 
-    @Override public AdapterResponse parseResponse(String text) {
-        JsonArray candidates = JsonParser.parseString(text).getAsJsonObject().getAsJsonArray("candidates");
-        if (candidates == null || candidates.isEmpty()) return new AdapterResponse("", null);
-        JsonObject content = candidates.get(0).getAsJsonObject().getAsJsonObject("content");
+    @Override public AdapterResponse parseResponse(String text) throws cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException {
+        try { return parsePayload(text); }
+        catch (cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException e) { throw e; }
+        catch (RuntimeException e) { throw new cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException("Invalid provider response fields", e); }
+    }
+    private AdapterResponse parsePayload(String text) throws cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException {
+        JsonObject root = CompletionReasons.root(text);
+        JsonArray candidates = root.has("candidates") ? CompletionReasons.requiredArray(root,"candidates") : null;
+        if (candidates == null || candidates.isEmpty()) {
+            if(root.has("promptFeedback")) {
+                JsonObject feedback=CompletionReasons.requiredObject(root,"promptFeedback");
+                String reason=CompletionReasons.requiredString(feedback,"blockReason");
+                return new AdapterResponse(CompletionReasons.optionalString(feedback,"blockReasonMessage"),null,CacheUsageParser.parse(root),null,List.of(),CompletionStatus.BLOCKED,reason,TokenUsageParser.parse(root));
+            }
+            throw new cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException("Gemini candidates missing without prompt feedback");
+        }
+        JsonObject candidate=CompletionReasons.first(candidates);
+        String reason=CompletionReasons.requiredString(candidate,"finishReason");
+        JsonObject content = candidate.getAsJsonObject("content");
         JsonArray parts = content == null ? null : content.getAsJsonArray("parts");
         StringBuilder answer = new StringBuilder(), thoughts = new StringBuilder();
         List<Message> blocks = new ArrayList<>();
@@ -110,6 +125,6 @@ public class GeminiAdapter implements ApiAdapter {
             Message part = messagePart(element.getAsJsonObject()); blocks.add(part);
             ("gemini_thought".equals(part.blockType()) ? thoughts : answer).append(part.content());
         }
-        return new AdapterResponse(answer.toString(), thoughts.isEmpty() ? null : thoughts.toString(), null, null, blocks);
+        return new AdapterResponse(answer.toString(), thoughts.isEmpty() ? null : thoughts.toString(), CacheUsageParser.parse(root), null, blocks, CompletionReasons.gemini(reason), reason, TokenUsageParser.parse(root));
     }
 }

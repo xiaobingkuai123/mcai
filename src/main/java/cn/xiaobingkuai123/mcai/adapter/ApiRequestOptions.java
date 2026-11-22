@@ -2,7 +2,12 @@ package cn.xiaobingkuai123.mcai.adapter;
 
 public record ApiRequestOptions(double temperature, double topP, int maxTokens, int timeoutSeconds,
                                 int maxRetries, boolean streaming, boolean thinkingEnabled,
-                                int thinkingBudget, String reasoningEffort, String cachedContent, boolean includeThoughts) {
+                                int thinkingBudget, String reasoningEffort, String cachedContent, boolean includeThoughts, String display) {
+    public ApiRequestOptions(double temperature, double topP, int maxTokens, int timeoutSeconds,
+                             int maxRetries, boolean streaming, boolean thinkingEnabled,
+                             int thinkingBudget, String reasoningEffort, String cachedContent, boolean includeThoughts) {
+        this(temperature, topP, maxTokens, timeoutSeconds, maxRetries, streaming, thinkingEnabled, thinkingBudget, reasoningEffort, cachedContent, includeThoughts, includeThoughts ? "summary" : "none");
+    }
     public ApiRequestOptions(double temperature, double topP, int maxTokens, int timeoutSeconds,
                              int maxRetries, boolean streaming, boolean thinkingEnabled,
                              int thinkingBudget, String reasoningEffort, String cachedContent) {

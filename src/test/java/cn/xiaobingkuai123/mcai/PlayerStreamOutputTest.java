@@ -82,4 +82,9 @@ class PlayerStreamOutputTest {
         var disable=new Fixture();disable.reasoning("pending");disable.output.fail("error");disable.enabled.set(false);disable.output.closeOnDisable();disable.scheduler.run();disable.scheduler.tick();assertTrue(disable.messages.isEmpty());
         assertThrows(CancellationException.class,()->disable.reasoning("late"));
     }
+
+    @Test void invalidationSuppressesQueuedFinalAnswerBeforeEntityTaskRuns() {
+        var f=new Fixture(); f.output.finish("stale answer",null); f.enabled.set(false); f.scheduler.run();
+        assertTrue(f.messages.isEmpty()); assertThrows(CancellationException.class,()->f.output.accept(new AiStreamClient.Delta("","late")));
+    }
 }

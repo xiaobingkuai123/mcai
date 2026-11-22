@@ -90,15 +90,28 @@ public final class AiStreamClient {
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(body, StandardCharsets.UTF_8))) {
                     readEvents(reader, adapter, accumulator);
+                    if (timedOut.get()) throw new HttpTimeoutException("AI stream timed out");
+                    if (adapter instanceof GeminiAdapter && accumulator.generationCompleted) accumulator.streamTerminated = true;
+                    if (!accumulator.streamTerminated || !accumulator.generationCompleted)
+                        throw new ProtocolException("AI stream closed before its terminal event");
+                } catch (Exception failure) {
+                    ApiAdapter.TokenUsage partial = TokenUsageParser.complete(accumulator.tokenUsage, false);
+                    java.util.logging.Logger.getLogger(AiStreamClient.class.getName()).info("AI token usage: input="
+                            + (partial == null || partial.inputTokens() == null ? "not-reported" : partial.inputTokens())
+                            + ", output=" + (partial == null || partial.outputTokens() == null ? "not-reported" : partial.outputTokens())
+                            + ", complete=false");
+                    throw failure;
                 }
 
                 if (timedOut.get()) throw new HttpTimeoutException("AI stream timed out");
-                if (!accumulator.completed) throw new IOException("AI stream closed before its completion event");
+                if (adapter instanceof GeminiAdapter && accumulator.generationCompleted) accumulator.streamTerminated = true;
+                if (!accumulator.streamTerminated || !accumulator.generationCompleted) throw new ProtocolException("AI stream closed before its terminal event");
 
                 return new ApiAdapter.AdapterResponse(
                         accumulator.content.toString(),
                         accumulator.reasoning.length() == 0 ? null : accumulator.reasoning.toString(),
-                        accumulator.cacheUsage, accumulator.signature(), accumulator.blocks()
+                        accumulator.cacheUsage, accumulator.signature(), accumulator.blocks(), accumulator.completionStatus, accumulator.finishReason,
+                        TokenUsageParser.complete(accumulator.tokenUsage, accumulator.tokenUsage != null && accumulator.tokenUsage.complete())
                 );
             } catch (IOException e) {
                 if (timedOut.get()) throw new HttpTimeoutException("AI stream timed out");
@@ -120,8 +133,8 @@ public final class AiStreamClient {
     }
 
     public static final class ProtocolException extends IOException {
-        ProtocolException(String message) { super(message); }
-        ProtocolException(String message, Throwable cause) { super(message, cause); }
+        public ProtocolException(String message) { super(message); }
+        public ProtocolException(String message, Throwable cause) { super(message, cause); }
     }
 
     public static final class ApiHttpException extends IOException {
@@ -168,7 +181,7 @@ public final class AiStreamClient {
                 if (data.length() > 0) {
                     parseEvent(adapter, eventName, data.toString(), accumulator);
                     data.setLength(0);
-                    if (accumulator.completed) return;
+                    if (accumulator.streamTerminated) return;
                 }
                 eventName = "";
                 continue;
@@ -197,8 +210,9 @@ public final class AiStreamClient {
         String trimmed = data.trim();
         if (trimmed.isEmpty() || trimmed.startsWith(":")) return;
         if ("[DONE]".equals(trimmed)) {
-            if (adapter instanceof AnthropicAdapter) throw new ProtocolException("Anthropic completion event missing");
-            accumulator.completed = true;
+            if (!(adapter instanceof OpenAIAdapter || adapter instanceof DeepSeekAdapter) || !accumulator.generationCompleted)
+                throw new ProtocolException("Generation terminal state missing before [DONE]");
+            accumulator.streamTerminated = true;
             return;
         }
 
@@ -214,8 +228,14 @@ public final class AiStreamClient {
         if (!parsed.isJsonObject()) throw new ProtocolException("Expected a stream JSON object");
         JsonObject root = parsed.getAsJsonObject();
         String type = string(root, "type");
+        try {
         ApiAdapter.CacheUsage usage = CacheUsageParser.parse(root);
-        if (usage != null) accumulator.cacheUsage = usage;
+        if (usage != null) {
+            // Anthropic output-only snapshots must retain the input cache counters.
+            if (!(adapter instanceof AnthropicAdapter) || root.has("message") || accumulator.cacheUsage == null)
+                accumulator.cacheUsage = usage;
+        }
+        accumulator.tokenUsage = TokenUsageParser.merge(accumulator.tokenUsage, TokenUsageParser.parse(root));
 
         if ("error".equals(type) || root.has("error")) {
             throw new ProtocolException("Provider returned a stream error");
@@ -230,11 +250,18 @@ public final class AiStreamClient {
         } else {
             parseChatCompletions(root, accumulator);
         }
+        } catch (RuntimeException error) {
+            throw new ProtocolException("Invalid provider stream fields", error);
+        }
     }
 
     private static void parseChatCompletions(JsonObject root, Accumulator accumulator) throws IOException {
         JsonArray choices = array(root, "choices");
-        if (choices == null || choices.size() == 0) return;
+        if (choices == null) throw new ProtocolException("Chat choices missing");
+        if (choices.isEmpty()) {
+            if (root.has("usage")) return;
+            throw new ProtocolException("Empty Chat choices without usage");
+        }
 
         JsonObject choice = choices.get(0).getAsJsonObject();
         JsonObject delta = object(choice, "delta");
@@ -243,19 +270,21 @@ public final class AiStreamClient {
             String reasoning = string(delta, "reasoning_content");
             if (reasoning.isEmpty()) reasoning = string(delta, "reasoning");
             accumulator.emit(reasoning, string(delta, "content"));
+            String refusal = string(delta, "refusal");
+            if (!refusal.isEmpty()) { accumulator.refused = true; accumulator.emit("", refusal); }
         }
 
-        String finishReason = string(choice, "finish_reason");
-        if ("content_filter".equals(finishReason)) {
-            throw new ProtocolException("Provider filtered the response");
-        }
+        String finishReason = CompletionReasons.optionalString(choice, "finish_reason");
         if (!finishReason.isEmpty()) {
-            accumulator.completed = true;
+            accumulator.finish(CompletionReasons.chat(finishReason), finishReason);
         }
     }
 
     private static void parseResponses(JsonObject root, String type, Accumulator accumulator) throws IOException {
-        if ("response.reasoning_summary_part.added".equals(type)) {
+        if ("response.output_item.added".equals(type) || "response.output_item.done".equals(type)) {
+            JsonObject item = object(root,"item");
+            if (item != null && string(item,"type").endsWith("_call")) accumulator.unsupportedTool = true;
+        } else if ("response.reasoning_summary_part.added".equals(type)) {
             accumulator.summaryState(root);
         } else if ("response.reasoning_summary_text.delta".equals(type)) {
             String key = accumulator.summaryState(root);
@@ -271,14 +300,22 @@ public final class AiStreamClient {
             }
         } else if ("response.output_text.delta".equals(type)) {
             accumulator.emit("", string(root, "delta"));
-        } else if ("response.completed".equals(type)) {
-            JsonObject response = object(root, "response");
-            if (response != null && !"completed".equals(string(response, "status"))) {
-                throw new ProtocolException("Responses request did not complete");
-            }
-            accumulator.completed = true;
-        } else if ("response.failed".equals(type) || "response.incomplete".equals(type)) {
-            throw new ProtocolException("Responses request failed or incomplete");
+        } else if ("response.refusal.delta".equals(type)) {
+            accumulator.refused = true;
+            String key = string(root,"item_id") + ":" + string(root,"output_index") + ":" + string(root,"content_index");
+            accumulator.refusalDeltas.add(key); accumulator.emit("", string(root,"delta"));
+        } else if ("response.refusal.done".equals(type)) {
+            accumulator.refused = true;
+            String key = string(root,"item_id") + ":" + string(root,"output_index") + ":" + string(root,"content_index");
+            if (accumulator.refusalDeltas.add(key)) accumulator.emit("", string(root,"refusal"));
+        } else if ("response.completed".equals(type) || "response.failed".equals(type) || "response.incomplete".equals(type)) {
+            JsonObject response = CompletionReasons.requiredObject(root,"response");
+            String status = CompletionReasons.requiredString(response,"status");
+            if (!type.equals("response." + status)) throw new ProtocolException("Responses terminal event/status mismatch");
+            String reason = status;
+            if ("incomplete".equals(status)) reason = CompletionReasons.requiredString(CompletionReasons.requiredObject(response,"incomplete_details"),"reason");
+            accumulator.finish(CompletionReasons.responses(status), reason);
+            accumulator.streamTerminated = true;
         }
     }
 
@@ -286,7 +323,16 @@ public final class AiStreamClient {
         if ("message_stop".equals(type)) {
             if (accumulator.anthropic.values().stream().anyMatch(block -> !block.stopped))
                 throw new ProtocolException("Anthropic message ended with an open content block");
-            accumulator.completed = true;
+            if (!accumulator.generationCompleted) throw new ProtocolException("Anthropic stop_reason missing");
+            accumulator.streamTerminated = true;
+            accumulator.tokenUsage = TokenUsageParser.complete(accumulator.tokenUsage, true);
+            return;
+        }
+        if ("message_start".equals(type)) return;
+        if ("message_delta".equals(type)) {
+            JsonObject delta = CompletionReasons.requiredObject(root,"delta");
+            String reason = CompletionReasons.optionalString(delta,"stop_reason");
+            if (!reason.isEmpty()) accumulator.finish(CompletionReasons.anthropic(reason), reason);
             return;
         }
         if (!type.startsWith("content_block_")) return;
@@ -332,8 +378,14 @@ public final class AiStreamClient {
     private static void parseGemini(JsonObject root, Accumulator accumulator) throws IOException {
         JsonArray candidates = array(root, "candidates");
         if (candidates == null || candidates.size() == 0) {
-            if (root.has("promptFeedback")) throw new ProtocolException("Gemini blocked the prompt");
-            return;
+            if (root.has("promptFeedback")) {
+                JsonObject feedback = CompletionReasons.requiredObject(root,"promptFeedback");
+                accumulator.finish(ApiAdapter.CompletionStatus.BLOCKED, CompletionReasons.requiredString(feedback,"blockReason"));
+                accumulator.emit("",CompletionReasons.optionalString(feedback,"blockReasonMessage"));
+                return;
+            }
+            if (root.has("usageMetadata")) return;
+            throw new ProtocolException("Gemini candidates missing without feedback");
         }
 
         JsonObject candidate = candidates.get(0).getAsJsonObject();
@@ -351,17 +403,14 @@ public final class AiStreamClient {
             }
         }
 
-        String finishReason = string(candidate, "finishReason");
+        String finishReason = CompletionReasons.optionalString(candidate, "finishReason");
         if (!finishReason.isEmpty()) {
-            if (!"STOP".equals(finishReason) && !"MAX_TOKENS".equals(finishReason)) {
-                throw new ProtocolException("Gemini response was blocked");
-            }
-            accumulator.completed = true;
+            accumulator.finish(CompletionReasons.gemini(finishReason), finishReason);
         }
     }
 
     private static String string(JsonObject object, String key) {
-        JsonElement element = object.get(key);
+        JsonElement element = object == null ? null : object.get(key);
         return element != null && !element.isJsonNull() && element.isJsonPrimitive()
                 ? element.getAsString() : "";
     }
@@ -385,7 +434,16 @@ public final class AiStreamClient {
         private final StringBuilder content = new StringBuilder();
         private final Consumer<Delta> listener;
         private ApiAdapter.CacheUsage cacheUsage;
-        private boolean completed;
+        private boolean generationCompleted, streamTerminated, refused, unsupportedTool;
+        private ApiAdapter.CompletionStatus completionStatus;
+        private String finishReason;
+        private ApiAdapter.TokenUsage tokenUsage;
+        private final java.util.Set<String> refusalDeltas = new java.util.HashSet<>();
+        private void finish(ApiAdapter.CompletionStatus status, String reason) {
+            if (unsupportedTool && status == ApiAdapter.CompletionStatus.COMPLETED) status = ApiAdapter.CompletionStatus.UNSUPPORTED;
+            completionStatus = refused && status == ApiAdapter.CompletionStatus.COMPLETED ? ApiAdapter.CompletionStatus.REFUSED : status;
+            finishReason = reason; generationCompleted = true;
+        }
         private final java.util.Set<String> summaryDeltas = new java.util.HashSet<>();
         private final java.util.LinkedHashSet<String> summaryParts = new java.util.LinkedHashSet<>();
         private String summaryState(JsonObject root) {

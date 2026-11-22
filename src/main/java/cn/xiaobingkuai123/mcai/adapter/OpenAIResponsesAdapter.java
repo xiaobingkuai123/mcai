@@ -29,18 +29,33 @@ public class OpenAIResponsesAdapter implements ApiAdapter {
         if(o.thinkingEnabled()){JsonObject r=new JsonObject();r.addProperty("effort",o.reasoningEffort());if(summaryEnabled&&summaryModels.contains(model))r.addProperty("summary",summaryLevel);b.add("reasoning",r);}
         return HttpRequest.newBuilder().uri(URI.create(endpoint)).header("Content-Type","application/json").header("Authorization","Bearer "+key).timeout(Duration.ofSeconds(o.timeoutSeconds())).POST(HttpRequest.BodyPublishers.ofString(b.toString())).build();
     }
-    @Override public AdapterResponse parseResponse(String text)throws Exception{
-        JsonObject root=JsonParser.parseString(text).getAsJsonObject(); if(!root.has("output"))return new AdapterResponse("",null);
+    @Override public AdapterResponse parseResponse(String text) throws cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException {
+        try { return parsePayload(text); }
+        catch (cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException e) { throw e; }
+        catch (RuntimeException e) { throw new cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException("Invalid provider response fields", e); }
+    }
+    private AdapterResponse parsePayload(String text) throws cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException {
+        JsonObject root=CompletionReasons.root(text);
+        String status=CompletionReasons.requiredString(root,"status");
+        var completion=CompletionReasons.responses(status);
+        String reason=status;
+        if("incomplete".equals(status)) reason=CompletionReasons.requiredString(CompletionReasons.requiredObject(root,"incomplete_details"),"reason");
+        boolean refused=false;
+        if(!root.has("output") && completion == CompletionStatus.COMPLETED) throw new cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException("Responses output missing");
         StringBuilder content=new StringBuilder(), reasoning=new StringBuilder();
-        for(JsonElement e:root.getAsJsonArray("output")){
+        for(JsonElement e:root.has("output") ? CompletionReasons.requiredArray(root,"output") : new JsonArray()){
             JsonObject item=e.getAsJsonObject(); String type=item.has("type")?item.get("type").getAsString():"";
             if("reasoning".equals(type)&&item.has("summary")&&item.get("summary").isJsonArray()) for(JsonElement part:item.getAsJsonArray("summary")){
                 JsonObject p=part.getAsJsonObject(); if("summary_text".equals(p.has("type")?p.get("type").getAsString():"")&&p.has("text")) reasoning.append(p.get("text").getAsString());
             }
+            if("output_text".equals(type)) content.append(CompletionReasons.optionalString(item,"text"));
+            if("refusal".equals(type)) { refused=true; content.append(CompletionReasons.optionalString(item,"refusal")); }
+            if(type.endsWith("_call")) completion=CompletionStatus.UNSUPPORTED;
             if("message".equals(type)&&item.has("content")) for(JsonElement q:item.getAsJsonArray("content")){
-                JsonObject part=q.getAsJsonObject(); if("output_text".equals(part.has("type")?part.get("type").getAsString():"")&&part.has("text"))content.append(part.get("text").getAsString());
+                JsonObject part=q.getAsJsonObject(); if("refusal".equals(CompletionReasons.optionalString(part,"type"))) { refused=true; content.append(CompletionReasons.optionalString(part,"refusal")); } if("output_text".equals(part.has("type")?part.get("type").getAsString():"")&&part.has("text"))content.append(part.get("text").getAsString());
             }
         }
-        return new AdapterResponse(content.toString(),reasoning.isEmpty()?null:reasoning.toString());
+        if(refused && completion == CompletionStatus.COMPLETED) completion=CompletionStatus.REFUSED;
+        return new AdapterResponse(content.toString(),reasoning.isEmpty()?null:reasoning.toString(),CacheUsageParser.parse(root),null,List.of(),completion,reason,TokenUsageParser.parse(root));
     }
 }

@@ -107,7 +107,7 @@ class AdapterRequestTest {
     }
 
     @Test void responsesNonStreamingCombinesAllOfficialSummaryParts() throws Exception {
-        var response = new OpenAIResponsesAdapter(30).parseResponse("{\"output\":[{\"type\":\"reasoning\",\"encrypted_content\":\"secret\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"one\"},{\"type\":\"summary_text\",\"text\":\"two\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}");
+        var response = new OpenAIResponsesAdapter(30).parseResponse("{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"encrypted_content\":\"secret\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"one\"},{\"type\":\"summary_text\",\"text\":\"two\"}]},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}");
         assertEquals("onetwo", response.reasoning()); assertEquals("answer", response.content());
     }
 
@@ -128,7 +128,7 @@ class AdapterRequestTest {
         var off = body(adapter.buildRequest("https://example.test", "key", "public-model", messages,
                 new ApiRequestOptions(.7,1,8192,30,0,true,false,0,null)));
         assertFalse(off.has("reasoning"));
-        var anthropic = body(new AnthropicAdapter(30).buildRequest("https://example.test", "key", "m", messages,
+        var anthropic = body(new AnthropicAdapter(30).buildRequest("https://example.test", "key", "claude-sonnet-4", messages,
                 new ApiRequestOptions(.7,1,8192,30,0,true,true,2048,"high")));
         assertEquals(2048,anthropic.getAsJsonObject("thinking").get("budget_tokens").getAsInt());
         assertEquals("summarized",anthropic.getAsJsonObject("thinking").get("display").getAsString());
@@ -137,9 +137,9 @@ class AdapterRequestTest {
 
     @Test void deepSeekUsesChatReasoningAndEffortWithoutAnySummaryParameter() throws Exception {
         var adapter = new DeepSeekAdapter(30);
-        var request = adapter.buildRequest("https://api.deepseek.com", "key", "deepseek-reasoner", List.of(),
+        var request = adapter.buildRequest("https://api.deepseek.com", "key", "deepseek-flash", List.of(),
                 new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 2048, "high"));
-        assertEquals("/v1/chat/completions", request.uri().getPath());
+        assertEquals("/chat/completions", request.uri().getPath());
         var json = body(request);
         assertEquals("enabled", json.getAsJsonObject("thinking").get("type").getAsString());
         assertEquals("high", json.get("reasoning_effort").getAsString());
@@ -179,8 +179,37 @@ class AdapterRequestTest {
         var json = body(adapter.buildRequest("https://example.test", "key", "gemini-2.5-flash", List.of(),
                 new ApiRequestOptions(.7, 1, 8192, 30, 0, true, true, 4096, "medium")));
         assertTrue(json.getAsJsonObject("generationConfig").getAsJsonObject("thinkingConfig").get("includeThoughts").getAsBoolean());
-        var response = adapter.parseResponse("{\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"\"},{\"text\":\"one\"},{\"thought\":false,\"text\":\"two\"},{\"thoughtSignature\":\"secret\"}]}}]}");
+        var response = adapter.parseResponse("{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"thought\":true,\"text\":\"\"},{\"text\":\"one\"},{\"thought\":false,\"text\":\"two\"},{\"thoughtSignature\":\"secret\"}]}}]}");
         assertNull(response.reasoning()); assertEquals("onetwo", response.content());
         assertEquals("secret", response.contentBlocks().get(3).signature());
+    }
+
+    @Test void deepSeekUrlsPreserveExplicitPrefixes() throws Exception {
+        for (String base : List.of("https://api.deepseek.com", "https://api.deepseek.com/", "https://api.deepseek.com/v1", "https://api.deepseek.com/v1/", "https://proxy.test/prefix/v1///")) {
+            assertEquals(base.replaceAll("/+$", "") + "/chat/completions", ApiUrls.deepSeekChatCompletions(base));
+            var request = new DeepSeekAdapter(30).buildRequest(base,"key","deepseek-flash",List.of(),new ApiRequestOptions(.7,1,4096,30,0,true,true,2048,"high"));
+            assertFalse(request.uri().getPath().contains("/v1/v1/"));
+            assertEquals("deepseek-flash",body(request).get("model").getAsString());
+            assertTrue(body(request).getAsJsonObject("stream_options").get("include_usage").getAsBoolean());
+        }
+        assertEquals("https://api.openai.com/v1/chat/completions",ApiUrls.v1("https://api.openai.com/","/chat/completions"));
+    }
+    @Test void adaptiveCapabilitiesAndDisplayAreValidated() throws Exception {
+        for(String model : List.of("claude-opus-4-6","claude-opus-4-7","claude-opus-4-8","claude-opus-5","claude-opus-5-5","claude-sonnet-5","claude-haiku-5-5")) {
+            var options=new ApiRequestOptions(.2,.3,8192,30,0,false,true,2048,"high",null,true,"none");
+            var request=new AnthropicAdapter(30,"2026-10-21").buildRequest("https://api.anthropic.com","key",model,List.of(),options);
+            var b=body(request); assertEquals("adaptive",b.getAsJsonObject("thinking").get("type").getAsString());
+            assertEquals("omitted",b.getAsJsonObject("thinking").get("display").getAsString());
+            assertFalse(b.has("temperature")); assertFalse(b.has("top_p")); assertFalse(b.has("top_k"));
+            assertEquals("2026-10-21",request.headers().firstValue("anthropic-version").orElseThrow());
+        }
+        for(boolean enabled:List.of(true,false)) {
+            var b=body(new AnthropicAdapter(30).buildRequest("https://api.anthropic.com","key","claude-sonnet-5-5",List.of(),new ApiRequestOptions(.7,1,8192,30,0,false,enabled,2048,"low")));
+            var t=b.getAsJsonObject("thinking"); assertEquals("between_tools",t.get("type").getAsString()); assertFalse(t.has("display")); assertFalse(t.has("budget_tokens"));
+        }
+        var off=body(new AnthropicAdapter(30).buildRequest("https://api.anthropic.com","key","claude-opus-5-5",8192,List.of(),false));
+        assertEquals("adaptive",off.getAsJsonObject("thinking").get("type").getAsString());
+        assertThrows(IllegalArgumentException.class,()->new AnthropicAdapter(30).buildRequest("https://api.anthropic.com","key","unknown",8192,List.of(),true));
+        assertThrows(IllegalArgumentException.class,()->new AnthropicAdapter(30).buildRequest("https://api.anthropic.com","key","claude-opus-5-5",List.of(),new ApiRequestOptions(.7,1,8192,30,0,false,true,2048,"high",null,true,"reasoning")));
     }
 }

@@ -21,9 +21,7 @@ public class OpenAIAdapter implements ApiAdapter {
         if (o.streaming()) { JsonObject usage = new JsonObject(); usage.addProperty("include_usage", true); b.add("stream_options", usage); }
         return HttpRequest.newBuilder().uri(URI.create(ApiUrls.v1(baseUrl, "/chat/completions"))).header("Content-Type", "application/json").header("Authorization", "Bearer " + key).timeout(Duration.ofSeconds(o.timeoutSeconds())).POST(HttpRequest.BodyPublishers.ofString(b.toString())).build();
     }
-    @Override public AdapterResponse parseResponse(String text) {
-        JsonObject m = JsonParser.parseString(text).getAsJsonObject().getAsJsonArray("choices").get(0).getAsJsonObject().getAsJsonObject("message");
-        String c = m.has("content") && !m.get("content").isJsonNull() ? m.get("content").getAsString() : "";
-        String r = m.has("reasoning_content") && !m.get("reasoning_content").isJsonNull() ? m.get("reasoning_content").getAsString() : null; return new AdapterResponse(c, r);
+    @Override public AdapterResponse parseResponse(String text) throws cn.xiaobingkuai123.mcai.AiStreamClient.ProtocolException {
+        return CompletionReasons.chatResponse(text, false);
     }
 }

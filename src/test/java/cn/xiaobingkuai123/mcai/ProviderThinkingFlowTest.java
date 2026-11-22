@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProviderThinkingFlowTest {
     static String event(String json) { return "data: " + json + "\n\n"; }
     static String gemini(String parts, boolean done) {
-        return "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" + parts
+        return "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[" + parts
                 + "]}" + (done ? ",\"finishReason\":\"STOP\"" : "") + "}]}";
     }
     static String chat(String delta, boolean done) {
@@ -105,13 +105,13 @@ class ProviderThinkingFlowTest {
         String data = chat("{\"reasoning_content\":\"raw one\",\"content\":null}", false)
                 + chat("{\"reasoning_content\":\" raw two\",\"content\":\"answer\"}", false)
                 + chat("{\"reasoning_content\":\"late raw\"}", false) + chat("{\"content\":\" done\"}", true);
-        var response = stream(adapter, data, flow::accept);
+        var response = stream(adapter, data + (adapter instanceof DeepSeekAdapter ? event("[DONE]") : ""), flow::accept);
         assertEquals("raw one raw twolate raw", response.reasoning()); assertEquals("answer done", response.content());
         assertTrue(flow.events.stream().filter(d -> !d.reasoning().isEmpty()).allMatch(d -> d.type() == AiStreamClient.EventType.DEEPSEEK_REASONING));
         assertTrue(flow.thinkingTitle.contains("raw one raw two"));
         assertFalse(PublicAiManager.thinkingEventAllowed(flow.profile, AiStreamClient.EventType.OPENAI_REASONING_SUMMARY));
         flow.finish(response);
-        var json = adapter.parseResponse("{\"choices\":[{\"message\":{\"reasoning_content\":\"raw\",\"content\":\"answer\"}}]}");
+        var json = adapter.parseResponse("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"reasoning_content\":\"raw\",\"content\":\"answer\"}}]}");
         assertEquals("raw", json.reasoning()); assertEquals("answer", json.content());
     }
     @Test void geminiMultipleMixedPartsStreamSeparatelyAndPreserveSignatureWithoutDisplayingIt() throws Exception {
@@ -146,8 +146,8 @@ class ProviderThinkingFlowTest {
             String data;
             if (adapter instanceof GeminiAdapter) data = event(gemini("{\"thought\":true,\"text\":\"\"},{\"text\":\"answer\"}", true));
             else if (adapter instanceof DeepSeekAdapter) data = chat("{\"content\":\"answer\"}", true);
-            else data = event("{\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}") + event("{\"type\":\"response.completed\"}");
-            var response = stream(adapter, data, flow::accept);
+            else data = event("{\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}") + event("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}");
+            var response = stream(adapter, data + (adapter instanceof DeepSeekAdapter ? event("[DONE]") : ""), flow::accept);
             assertNull(response.reasoning()); assertEquals("answer", response.content()); flow.finish(response);
         }
         var flow = new PublicFlow(new GeminiAdapter(5));
@@ -191,10 +191,28 @@ class ProviderThinkingFlowTest {
             else data = event("{\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}")
                     + event("{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"late\"}")
                     + event("{\"type\":\"response.output_text.delta\",\"delta\":\" done\"}")
-                    + event("{\"type\":\"response.completed\"}");
-            var response = stream(adapter, data, flow::accept);
+                    + event("{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}");
+            var response = stream(adapter, data + (adapter instanceof DeepSeekAdapter ? event("[DONE]") : ""), flow::accept);
             assertFalse(flow.answerTitle.contains("late")); assertEquals("answer done", response.content());
             flow.finish(response);
         }
+    }
+
+    @Test void omittedThinkingRetainsSignatureAndSeparatesAnswer() throws Exception {
+        String data=event("{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}")
+            +event("{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"opaque+/=\"}}")
+            +event("{\"type\":\"content_block_stop\",\"index\":0}")
+            +event("{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"answer\"}}")
+            +event("{\"type\":\"content_block_stop\",\"index\":1}")
+            +event("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}")+event("{\"type\":\"message_stop\"}");
+        var deltas=new ArrayList<AiStreamClient.Delta>(); var a=new AnthropicAdapter(5);
+        var response=stream(a,data,deltas::add); assertNull(response.reasoning()); assertEquals("answer",response.content());
+        assertEquals("opaque+/=",response.contentBlocks().get(0).signature());
+        assertTrue(deltas.stream().noneMatch(d->(d.content()+d.reasoning()).contains("opaque")));
+        var messages=new ArrayList<ApiAdapter.Message>(); messages.add(new ApiAdapter.Message("user","q")); messages.addAll(response.contentBlocks());
+        var request=a.buildRequest("https://api.anthropic.com","key","claude-opus-5-5",messages,new ApiRequestOptions(.7,1,8192,5,0,false,false,2048,"low",null,false,"none"));
+        var json=JsonParser.parseString(BatchFixRegressionTest.body(request)).getAsJsonObject();
+        assertEquals("adaptive",json.getAsJsonObject("thinking").get("type").getAsString()); assertEquals("omitted",json.getAsJsonObject("thinking").get("display").getAsString());
+        assertEquals("opaque+/=",json.getAsJsonArray("messages").get(1).getAsJsonObject().getAsJsonArray("content").get(0).getAsJsonObject().get("signature").getAsString());
     }
 }

@@ -18,16 +18,21 @@ import java.util.UUID;
 public final class HistoryPersistence {
     private static final int VERSION = 1;
     private final File directory;
+    private final java.util.Map<String, Long> versions = new java.util.HashMap<>();
+    private synchronized long reserve(String key) { long n=versions.getOrDefault(key,0L)+1; versions.put(key,n); return n; }
+    public synchronized long reserveSave(UUID id) { return reserve(id.toString()); }
+    public synchronized long reservePublicSave() { return reserve("public"); }
+    private boolean current(String key,long version) { return versions.getOrDefault(key,0L)==version; }
 
     public HistoryPersistence(File dataFolder) {
         directory = new File(dataFolder, "history");
     }
 
-    public ConversationHistory load(UUID id, ConversationHistory.Mode mode, int maxRounds) {
+    public synchronized ConversationHistory load(UUID id, ConversationHistory.Mode mode, int maxRounds) {
         return loadFile(fileFor(id), mode, maxRounds);
     }
 
-    public ConversationHistory loadPublic(ConversationHistory.Mode mode, int maxRounds) {
+    public synchronized ConversationHistory loadPublic(ConversationHistory.Mode mode, int maxRounds) {
         return loadFile(new File(directory, "public-ai.yml"), mode, maxRounds);
     }
 
@@ -74,7 +79,11 @@ public final class HistoryPersistence {
     }
 
     public void saveMessages(UUID id, List<ConversationHistory.Message> snapshot) throws IOException {
-        saveMessagesToFile(fileFor(id), snapshot, id);
+        saveMessages(id, snapshot, reserveSave(id));
+    }
+
+    public synchronized void saveMessages(UUID id, List<ConversationHistory.Message> snapshot, long version) throws IOException {
+        if (current(id.toString(),version)) saveMessagesToFile(fileFor(id),snapshot,id);
     }
 
     public void savePublic(ConversationHistory history) throws IOException {
@@ -82,10 +91,17 @@ public final class HistoryPersistence {
     }
 
     public void savePublicMessages(List<ConversationHistory.Message> snapshot) throws IOException {
-        saveMessagesToFile(new File(directory, "public-ai.yml"), snapshot, null);
+        savePublicMessages(snapshot, reservePublicSave());
     }
 
-    public void deletePublic() {
+    public synchronized void savePublicMessages(List<ConversationHistory.Message> snapshot, long version) throws IOException {
+        if(current("public",version)) saveMessagesToFile(new File(directory,"public-ai.yml"),snapshot,null);
+    }
+    public synchronized void deletePublicIfCurrent(long version) {
+        if(current("public",version)) deletePublic();
+    }
+    public synchronized void deletePublic() {
+        reserve("public");
         try { Files.deleteIfExists(new File(directory, "public-ai.yml").toPath()); }
         catch (IOException ignored) { }
     }
@@ -112,7 +128,8 @@ public final class HistoryPersistence {
             }
         }
 
-        File temporary = new File(target.getPath() + ".tmp");
+        File temporary = Files.createTempFile(directory.toPath(), target.getName(), ".tmp").toFile();
+        try {
         yaml.save(temporary);
         try {
             Files.move(temporary.toPath(), target.toPath(),
@@ -120,9 +137,11 @@ public final class HistoryPersistence {
         } catch (AtomicMoveNotSupportedException e) {
             Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
+        } finally { Files.deleteIfExists(temporary.toPath()); }
     }
 
-    public void delete(UUID id) {
+    public synchronized void delete(UUID id) {
+        reserve(id.toString());
         try {
             Files.deleteIfExists(fileFor(id).toPath());
         } catch (IOException ignored) {

@@ -69,6 +69,8 @@ public final class PublicAiManager {
                     c.getBoolean("ai.adapters.request.streaming", true) && publicAi.getBoolean("streaming.enabled", true),
                     c.getBoolean("ai.adapters.gemini.generate-content.cached-content.enabled", false),
                     thinking && "summary".equals(display), display);
+            if (!Set.of("none", "summary", "reasoning").contains(display)) throw new IllegalArgumentException("Invalid public thinking display");
+            McAI.validateRequest(profile.adapter(), profile.apiKey(), profile.baseUrl(), profile.model(), profile.maxTokens(), thinking, budget, effort, display);
             return new Settings(publicAi.getBoolean("enabled", true), publicAi.getString("trigger", "AI"),
                     Math.max(0, publicAi.getInt("cost-points", 1)), publicAi.getString("context.player-template", "{player}"),
                     "accumulate".equalsIgnoreCase(publicAi.getString("history.mode", "sliding"))
@@ -103,6 +105,8 @@ public final class PublicAiManager {
         try {
             plugin.schedulerAdapter.runAsync(() -> {
                 try {
+                    synchronized (stateLock) {
+                    if (!settings.persistent()) plugin.historyPersistence.deletePublic();
                     ConversationHistory loaded = settings.persistent()
                             ? plugin.historyPersistence.loadPublic(settings.mode(), settings.maxRounds())
                             : new ConversationHistory(settings.mode(), settings.maxRounds());
@@ -110,11 +114,14 @@ public final class PublicAiManager {
                             && YamlConfiguration.loadConfiguration(stateFile).getBoolean("locked", false);
                     synchronized (stateLock) {
                         if (!stopped) {
-                            history = loaded;
-                            if (locked) decisionState = DecisionState.LOCKED;
+                            if (sessionId == 0) {
+                                history = loaded;
+                                if (locked) decisionState = DecisionState.LOCKED;
+                            }
                             initialized = true;
                         }
                         loading = false;
+                    }
                     }
                 } finally {
                     loadComplete.countDown();
@@ -283,12 +290,16 @@ public final class PublicAiManager {
                 try {
                     ApiAdapter.AdapterResponse response = plugin.chatManager.callApi(current.profile(), memory, prompt,
                             stream == null ? null : stream::accept, () -> active(token, session));
+                    ChatManager.requireAccepted(response);
+                    if (response.completionStatus() == ApiAdapter.CompletionStatus.REFUSED && (response.content() == null || response.content().isBlank()))
+                        response = new ApiAdapter.AdapterResponse(ChatManager.visibleContent(response), response.reasoning(), response.cacheUsage(), response.reasoningSignature(), response.contentBlocks(), response.completionStatus(), response.finishReason(), response.tokenUsage());
                     if (response.content() == null || response.content().isBlank()) throw new IOException("Empty public answer");
                     completeRequest(token, session, current, prompt, response, stream, console);
                     success = true;
                 } catch (Exception error) {
                     if (stream != null) stream.abort();
-                    if (active(token, session)) broadcastToAll(plugin.languageManager.get("public-ai-request-failed"), null);
+                    if (active(token, session)) broadcastToAll(error instanceof ChatManager.ResponseStatusException state
+                            ? "AI response: " + state.status : plugin.languageManager.get("public-ai-request-failed"), null);
                 } finally {
                     if (!success) refundIfPending(token);
                     synchronized (stateLock) {
@@ -311,12 +322,15 @@ public final class PublicAiManager {
             ApiAdapter.AdapterResponse response, PublicStream stream, org.bukkit.command.ConsoleCommandSender console) {
         synchronized (stateLock) {
             if (!active(token, session)) throw new CancellationException("Stale public session");
+            if (!response.accepted()) throw new IllegalStateException("Unsuccessful public response");
             java.util.ArrayList<ApiAdapter.Message> round = new java.util.ArrayList<>();
             round.add(new ApiAdapter.Message("user", prompt));
             if ((current.profile().adapter() instanceof cn.xiaobingkuai123.mcai.adapter.AnthropicAdapter
                     || current.profile().adapter() instanceof cn.xiaobingkuai123.mcai.adapter.GeminiAdapter)
                     && !response.contentBlocks().isEmpty()) {
                 round.addAll(response.contentBlocks());
+                if (response.completionStatus() == ApiAdapter.CompletionStatus.REFUSED && response.contentBlocks().stream().noneMatch(b -> "text".equals(b.blockType()) && !b.content().isBlank()))
+                    round.add(new ApiAdapter.Message("assistant", response.content()));
             } else round.add(new ApiAdapter.Message("assistant", response.content()));
             history.addRound(round);
             pendingRefunds.remove(token);
@@ -450,6 +464,7 @@ public final class PublicAiManager {
             if (stopped || decisionId != decision || decisionState != DecisionState.PENDING) return;
             cancelDecisionTimeoutLocked();
             history.reset(); ++sessionId; ++decisionId;
+            plugin.historyPersistence.deletePublic();
             activeRequestToken = null; decisionAdmins.clear(); decisionState = DecisionState.NONE;
         }
         persistSnapshot();
@@ -645,6 +660,7 @@ public final class PublicAiManager {
             history.reconfigure(next.mode(), next.maxRounds());
             settings = next;
             refunds = invalidateRequests();
+            if (!next.persistent()) plugin.historyPersistence.deletePublic();
         }
         refundAll(refunds);
         publicStreams.forEach(PublicStream::abort);
@@ -656,10 +672,12 @@ public final class PublicAiManager {
             List<ConversationHistory.Message> snapshot = history.persistedMessages();
             boolean saveHistory = settings.persistent();
             boolean locked = decisionState == DecisionState.LOCKED;
+            long version = plugin.historyPersistence.reservePublicSave();
             persistence.execute(() -> {
                 synchronized (persistenceLock) {
                     try {
-                        if (saveHistory) plugin.historyPersistence.savePublicMessages(snapshot);
+                        if (saveHistory) plugin.historyPersistence.savePublicMessages(snapshot, version);
+                        else plugin.historyPersistence.deletePublicIfCurrent(version);
                         saveLocked(locked);
                     } catch (IOException error) {
                         plugin.getLogger().warning(plugin.languageManager.get("public-ai-save-failed"));
@@ -707,6 +725,7 @@ public final class PublicAiManager {
         List<PendingCharge> refunds;
         synchronized (stateLock) {
             history.reset(); ++sessionId; ++decisionId;
+            plugin.historyPersistence.deletePublic();
             cancelDecisionTimeoutLocked();
             activeRequestToken = null; decisionState = DecisionState.NONE; decisionAdmins.clear();
             refunds = invalidateRequests();

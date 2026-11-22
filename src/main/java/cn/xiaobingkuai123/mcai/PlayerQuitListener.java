@@ -18,27 +18,20 @@ public class PlayerQuitListener implements Listener {
             output.closeNow();
         }
 
-        // 玩家退出必须立即释放占位，不能等 worker 的 finally。
-        // worker 后续用 token 判断归属，不会误删重连后的新请求。
-        plugin.activePlayerRequests.remove(playerId);
-
-        if (plugin.historyPersistenceEnabled && plugin.historyPersistence != null
-                && plugin.schedulerAdapter != null) {
-            ConversationHistory memory = plugin.conversationMemories.get(playerId);
-            if (memory != null) {
-                var snapshot = memory.persistedMessages();
-                HistoryPersistence persistence = plugin.historyPersistence;
-                try {
-                    plugin.schedulerAdapter.runAsync(() -> {
-                        try { persistence.saveMessages(playerId, snapshot); }
-                        catch (Exception ignored) { }
-                    });
-                } catch (RuntimeException ignored) {
-                    // Shutdown must not prevent the remaining player-state cleanup.
+        synchronized (plugin.playerHistoryLock(playerId)) {
+            plugin.invalidatePlayerRequests(playerId);
+            ConversationHistory memory = plugin.conversationMemories.remove(playerId);
+            if (plugin.historyPersistence != null) {
+                // Synchronous coordinated commit finishes before the next login can load history.
+                long version = plugin.historyPersistence.reserveSave(playerId);
+                if (plugin.historyPersistenceEnabled && memory != null && plugin.schedulerAdapter != null) {
+                    var snapshot = memory.persistedMessages();
+                    HistoryPersistence persistence = plugin.historyPersistence;
+                    try { persistence.saveMessages(playerId, snapshot, version); }
+                    catch (Exception error) { plugin.getLogger().warning("Unable to save player history on quit"); }
                 }
             }
         }
-        plugin.conversationMemories.remove(playerId);
         plugin.rateLimiter.remove(playerId);
         plugin.waitingInputType.remove(playerId);
         plugin.selectedChatMode.remove(playerId);

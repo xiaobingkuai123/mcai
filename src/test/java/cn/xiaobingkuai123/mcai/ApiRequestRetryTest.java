@@ -18,7 +18,7 @@ class ApiRequestRetryTest {
     private final AtomicInteger calls = new AtomicInteger();
     private final ApiRequestRetry retry = new ApiRequestRetry(() -> true, millis -> {});
     private static final String DELTA = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
-    private static final String DONE = "data: [DONE]\n\n";
+    private static final String DONE = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
 
     @BeforeEach void start() throws Exception {
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
